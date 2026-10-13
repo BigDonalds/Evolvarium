@@ -41,7 +41,8 @@ macOS, each on Python 3.10 and 3.14, the oldest supported version and the
 newest, and runs `ruff check` once. The replay runs on every system on purpose.
 The network's matrix products go through different BLAS builds and CPU
 instructions on each, and a sum rounded differently in the last place can flip
-a close choice between two moves.
+a close choice between two moves. On the first run all six passed: the 60 games
+came back the same on every system and both versions of Python.
 
 **Lint.** At the baseline `ruff check` had one complaint: the rename pushed a
 line in `cli.py` from 99 characters to 101. It is wrapped.
