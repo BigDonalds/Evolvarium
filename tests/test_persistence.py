@@ -71,7 +71,9 @@ def test_checkpoint_contains_no_torch_types(small_config, tmp_path):
     path = tmp_path / "cp.npz"
     checkpoint.save(population, path)
     with np.load(path, allow_pickle=False) as archive:
-        assert set(archive.files) <= {"genomes", "meta", "best_genome"}
+        assert set(archive.files) <= {
+            "genomes", "meta", "best_genome", "species_representatives",
+        }
 
 
 def test_history_keeps_summaries_but_bounds_memory(small_config, tmp_path):

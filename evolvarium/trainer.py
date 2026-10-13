@@ -55,6 +55,13 @@ class Trainer:
         if resume_from is not None:
             self.population = checkpoint.load(resume_from, config, seed=seed)
             self.resumed_from: str | None = str(resume_from)
+            if not checkpoint.restores_exactly(resume_from):
+                self.reporter.note(
+                    "checkpoint has no saved random state; this run will not "
+                    "match one that never stopped"
+                )
+            elif seed is not None:
+                self.reporter.note(f"seed {seed} unused: the checkpoint's random state continues")
         else:
             self.population = Population(config, seed=seed)
             self.resumed_from = None

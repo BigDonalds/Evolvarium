@@ -10,6 +10,12 @@ Exporting a standalone .pt model is a separate, explicit action that lives in
 Every checkpoint records the feature spec and architecture it was trained under.
 Loading refuses a mismatch rather than reshaping the genome to fit, because a
 resized genome is not the model that was saved.
+
+From format 3 a checkpoint also holds everything the next generation reads that
+is not a setting: the random generator's state, the species and the members'
+ids and parents. A run resumed from it continues exactly as the uninterrupted
+run would have. Format 2 checkpoints still load, but the resumed run draws new
+random numbers from the seed it is given and goes its own way.
 """
 
 from __future__ import annotations
@@ -25,11 +31,12 @@ from pathlib import Path
 import numpy as np
 
 from ..config import Config
-from ..evolution.individual import Individual
+from ..evolution import speciation
+from ..evolution.individual import Individual, id_number, reserve_ids
 from ..evolution.population import Population
-from ..nn.network import Architecture
+from ..nn.network import Architecture, random_genome
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 # The dashboard lists and inspects checkpoints on its own thread while the
 # trainer writes them. Windows refuses to replace a file that still has an open
@@ -105,6 +112,17 @@ def save(population: Population, path: Path) -> CheckpointInfo:
         "evolution": dataclasses.asdict(population.config.evolution),
         "origins": [m.origin for m in population.members],
         "ages": [m.age for m in population.members],
+        "ids": [m.id for m in population.members],
+        "parents": [list(m.parents) for m in population.members],
+        # PCG64 state is two 128-bit integers. JSON keeps integers exact at any
+        # size, so the state survives the round trip unchanged.
+        "rng": population.rng.bit_generator.state,
+        "compatibility_threshold": population.compatibility_threshold,
+        "next_species_id": population._next_species_id,
+        "species": [
+            {"id": s.id, "best_fitness": s.best_fitness, "stagnation": s.stagnation}
+            for s in population.species
+        ],
     }
 
     best = population.best_ever_genome
@@ -114,6 +132,10 @@ def save(population: Population, path: Path) -> CheckpointInfo:
     }
     if best is not None:
         arrays["best_genome"] = best.astype(np.float32)
+    if population.species:
+        arrays["species_representatives"] = np.stack(
+            [s.representative for s in population.species]
+        ).astype(np.float32)
 
     # Write beside the target and move into place so an interrupted save cannot
     # leave a half-written checkpoint where a valid one used to be.
@@ -156,14 +178,28 @@ def inspect(path: Path) -> CheckpointInfo:
     )
 
 
+def restores_exactly(path: Path) -> bool:
+    """Whether resuming from `path` continues the run it was saved from."""
+    return "rng" in read_meta(path)
+
+
 def load(path: Path, config: Config, seed: int | None = None) -> Population:
-    """Rebuild a population from a checkpoint, or raise CheckpointMismatch."""
+    """Rebuild a population from a checkpoint, or raise CheckpointMismatch.
+
+    `seed` is used only when the checkpoint carries no random state. Otherwise
+    the saved state wins, since reseeding is exactly what makes a resumed run
+    drift from the original.
+    """
     with _FILE_LOCK, np.load(path, allow_pickle=False) as archive:
         meta = json.loads(bytes(archive["meta"]).decode("utf-8"))
         genomes = np.array(archive["genomes"], dtype=np.float32)
         best = (
             np.array(archive["best_genome"], dtype=np.float32)
             if "best_genome" in archive else None
+        )
+        representatives = (
+            np.array(archive["species_representatives"], dtype=np.float32)
+            if "species_representatives" in archive else None
         )
 
     spec = meta.get("feature_spec")
@@ -181,23 +217,42 @@ def load(path: Path, config: Config, seed: int | None = None) -> Population:
             f"current {population.architecture.to_dict()}"
         )
 
+    if "rng" in meta:
+        population.rng.bit_generator.state = meta["rng"]
+
     origins = meta.get("origins", [])
     ages = meta.get("ages", [])
-    population.members = [
-        Individual(
+    ids = meta.get("ids", [])
+    parents = meta.get("parents", [])
+    if ids:
+        reserve_ids(max(id_number(i) for i in ids))
+    population.members = []
+    for i in range(len(genomes)):
+        member = Individual(
             genome=genomes[i].copy(),
             generation=int(meta.get("generation", 0)),
             age=int(ages[i]) if i < len(ages) else 0,
             origin=str(origins[i]) if i < len(origins) else "restored",
+            parents=tuple(parents[i]) if i < len(parents) else (),
         )
-        for i in range(len(genomes))
-    ]
+        if i < len(ids):
+            member.id = str(ids[i])
+        population.members.append(member)
+
+    population.compatibility_threshold = float(
+        meta.get("compatibility_threshold", population.compatibility_threshold)
+    )
+    population._next_species_id = int(meta.get("next_species_id", 0))
+    population.species = []
+    for i, saved in enumerate(meta.get("species", [])):
+        group = speciation.Species(int(saved["id"]), representatives[i])
+        group.best_fitness = float(saved["best_fitness"])
+        group.stagnation = int(saved["stagnation"])
+        population.species.append(group)
 
     # Top up or trim if the configured population size has changed since saving.
     target = config.evolution.population_size
     while len(population.members) < target:
-        from ..nn.network import random_genome
-
         population.members.append(
             Individual(
                 genome=random_genome(

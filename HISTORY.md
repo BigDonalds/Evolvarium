@@ -10,6 +10,33 @@ directly.
 
 ---
 
+## Exact resume - the random state and species go into checkpoints
+
+A checkpoint held the genomes and the run's counters but not the random
+generator. Resuming built a new generator from the seed given on the command
+line, or a random one when none was given, so the resumed run drew different
+tournaments, mutations and game seeds from the run it was meant to continue.
+Two runs resumed from the same checkpoint did not agree with each other either.
+Any comparison that went through a resume mixed the effect being measured with
+a reshuffle at the resume point.
+
+Checkpoints are now format 3. They add the generator's state, the species with
+their representatives, best fitness and stagnation counts, the speciation
+threshold, and each member's id and parents. `tests/test_resume.py` plays six
+generations straight through, plays them again with a save and a load after the
+third, and requires every generation's report and the final genomes to agree
+bit for bit. It does this with speciation off and on, and once more through the
+trainer, which also writes history and checkpoints on the way. The load is
+handed a different seed on purpose and the saved state has to win. Before the
+test was trusted, the random state and then the species were stripped from a
+checkpoint, and both times the comparison failed. The runs use an 8 by 8 board
+and a 40-move starvation limit, which brings the five tests down from two
+minutes on the full board to about 14 seconds.
+
+Restored members keep their ids, so parent links in the history carry across a
+resume, and new members are numbered above them. Format 2 checkpoints still
+load, and the trainer says that the resumed run will not match the original.
+
 ## Pinning down the baseline - the 81.5 model as a test, CI on three systems, and starting measurements
 
 Most of the planned work rewrites what the 81.5 model depends on: the game

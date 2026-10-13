@@ -23,6 +23,22 @@ from ..game.engine import DeathCause
 _ids = itertools.count(1)
 
 
+def reserve_ids(highest: int) -> None:
+    """Start new ids above `highest`.
+
+    Members restored from a checkpoint keep the ids they were saved with, and
+    the history already refers to them by those ids. A fresh process counts from
+    1 again, so without this a new member could be handed an id that already
+    belongs to someone in the run.
+    """
+    global _ids
+    _ids = itertools.count(max(next(_ids), highest + 1))
+
+
+def id_number(individual_id: str) -> int:
+    return int(individual_id.removeprefix("ind"))
+
+
 @dataclass
 class Individual:
     genome: np.ndarray
