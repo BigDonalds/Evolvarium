@@ -1,0 +1,153 @@
+{
+  "format": "snake-ai-model",
+  "format_version": 1,
+  "exported_at": "2026-10-13T00:07:57+00:00",
+  "run_id": "run-20260925-101345",
+  "generation": 155,
+  "architecture": {
+    "input_size": 11,
+    "hidden_layers": [
+      16,
+      12
+    ],
+    "hidden_activations": [
+      "tanh",
+      "tanh"
+    ],
+    "output_size": 3
+  },
+  "feature_spec": {
+    "name": "egocentric_v3",
+    "size": 11,
+    "inputs": [
+      "danger_left",
+      "danger_straight",
+      "danger_right",
+      "space_left",
+      "space_straight",
+      "space_right",
+      "food_forward",
+      "food_lateral",
+      "food_distance",
+      "length_ratio",
+      "starvation_progress"
+    ]
+  },
+  "action_space": [
+    "left",
+    "straight",
+    "right"
+  ],
+  "board": {
+    "width": 14,
+    "height": 14
+  },
+  "training": {
+    "generations": 155,
+    "episodes": 93000,
+    "compute_seconds": 28820.27,
+    "best_score": 153,
+    "best_fitness": 122223.08,
+    "best_generation": 154,
+    "mean_score_final": 37.9533,
+    "scoring_fraction_final": 0.8467,
+    "mean_steps_final": 2619.1,
+    "records_set": 31,
+    "deaths": {
+      "wall": 1251,
+      "starvation": 10948,
+      "self": 9194,
+      "step_limit": 1857
+    }
+  },
+  "achievements": [
+    {
+      "key": "score_1",
+      "label": "First bite",
+      "detail": "An agent ate at least once",
+      "generation": 0,
+      "unlocked": true
+    },
+    {
+      "key": "score_5",
+      "label": "Five course",
+      "detail": "Reached a score of 5",
+      "generation": 0,
+      "unlocked": true
+    },
+    {
+      "key": "score_10",
+      "label": "Double digits",
+      "detail": "Reached a score of 10",
+      "generation": 1,
+      "unlocked": true
+    },
+    {
+      "key": "score_20",
+      "label": "Twenty",
+      "detail": "Reached a score of 20",
+      "generation": 3,
+      "unlocked": true
+    },
+    {
+      "key": "score_35",
+      "label": "Coiled",
+      "detail": "Reached a score of 35",
+      "generation": 5,
+      "unlocked": true
+    },
+    {
+      "key": "score_50",
+      "label": "Half century",
+      "detail": "Reached a score of 50",
+      "generation": 16,
+      "unlocked": true
+    },
+    {
+      "key": "majority_feeding",
+      "label": "Majority feeding",
+      "detail": "Over half the population ate in one generation",
+      "generation": 2,
+      "unlocked": true
+    },
+    {
+      "key": "population_feeding",
+      "label": "Whole population feeding",
+      "detail": "Nine in ten agents ate in one generation",
+      "generation": 7,
+      "unlocked": true
+    },
+    {
+      "key": "endurance",
+      "label": "Endurance",
+      "detail": "Mean survival passed 100 steps",
+      "generation": 0,
+      "unlocked": true
+    },
+    {
+      "key": "wall_wise",
+      "label": "Wall wise",
+      "detail": "A generation passed with no wall deaths",
+      "generation": null,
+      "unlocked": false
+    },
+    {
+      "key": "consistent",
+      "label": "Consistent",
+      "detail": "Mean score across the population reached 1.0",
+      "generation": 2,
+      "unlocked": true
+    }
+  ],
+  "usage": "Load with torch.load(path, weights_only=False). Feed the 11 inputs named in feature_spec.inputs, in order, through the weight_i/bias_i pairs applying the listed hidden activations; argmax of the 3 outputs selects turn left / straight / right relative to the snake's current heading.",
+  "selection": {
+    "rule": "best average",
+    "source": "population member 24",
+    "candidates": 153,
+    "games": 48,
+    "selection_mean": 83.0,
+    "stored_champion_mean": 51.06,
+    "note": "means over the games that made the choice flatter the winner; score it on held-out games for an honest figure"
+  },
+  "parameter_count": 435
+}

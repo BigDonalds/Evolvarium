@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>evolvarium · population dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="identity">
+    <div class="mark" aria-hidden="true"></div>
+    <div>
+      <h1>snake&#8209;ai</h1>
+      <p class="run" id="run-id">connecting…</p>
+    </div>
+  </div>
+
+  <div class="metrics" id="metrics">
+    <div class="metric"><span class="k">Generation</span><span class="v" id="m-gen">–</span></div>
+    <div class="metric"><span class="k">Best score</span><span class="v accent" id="m-best">–</span></div>
+    <div class="metric"><span class="k">Mean score</span><span class="v" id="m-mean">–</span></div>
+    <div class="metric"><span class="k">Feeding</span><span class="v" id="m-eat">–</span></div>
+    <div class="metric"><span class="k">Episodes</span><span class="v" id="m-eps">–</span></div>
+    <div class="metric"><span class="k">Gen / min</span><span class="v" id="m-rate">–</span></div>
+  </div>
+
+  <div class="state" id="state-chip" data-state="running">
+    <span class="dot"></span><span id="state-text">running</span>
+  </div>
+</header>
+
+<main class="layout">
+
+  <section class="panel span-2">
+    <div class="panel-head">
+      <h2>Progress</h2>
+      <div class="legend">
+        <span class="key best">best</span>
+        <span class="key mean">mean</span>
+        <span class="key feed">feeding&nbsp;%</span>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <svg id="chart" viewBox="0 0 1000 220" preserveAspectRatio="none" role="img"
+           aria-label="Score by generation"></svg>
+      <div class="chart-empty" id="chart-empty">waiting for the first generation…</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Training control</h2></div>
+    <div class="control">
+      <p class="hold-status" id="hold-status">Training runs freely until the dashboard is open.</p>
+      <div class="button-row">
+        <button class="btn primary" id="btn-continue">Continue</button>
+        <button class="btn" id="btn-continue-5">Continue ×5</button>
+      </div>
+      <div class="button-row">
+        <button class="btn" id="btn-hold" aria-pressed="false">Hold each generation</button>
+        <button class="btn" id="btn-free">Run free</button>
+      </div>
+      <p class="hint">
+        While this page is open, evolution pauses at each generation boundary so a
+        generation cannot be replaced before you have looked at it. Close the tab
+        and training resumes on its own.
+      </p>
+    </div>
+  </section>
+
+  <section class="panel span-3">
+    <div class="panel-head">
+      <h2>Population</h2>
+      <div class="browser">
+        <button class="btn icon" id="gen-first" title="First generation">⏮</button>
+        <button class="btn icon" id="gen-prev" title="Previous generation">◀</button>
+        <label class="scrub">
+          <input type="range" id="gen-range" min="0" max="0" value="0">
+        </label>
+        <button class="btn icon" id="gen-next" title="Next generation">▶</button>
+        <button class="btn icon" id="gen-last" title="Latest generation">⏭</button>
+        <input type="number" id="gen-jump" class="jump" min="0" placeholder="gen">
+        <button class="btn" id="btn-live" aria-pressed="true">Follow latest</button>
+      </div>
+    </div>
+
+    <div class="gen-summary" id="gen-summary"></div>
+
+    <div class="playback">
+      <button class="btn icon" id="btn-play" title="Play or pause">⏸</button>
+      <button class="btn icon" id="btn-restart" title="Restart replay">↺</button>
+      <input type="range" id="frame-range" min="0" max="0" value="0">
+      <span class="frame-label" id="frame-label">0 / 0</span>
+      <select id="speed" class="select" title="Replay speed">
+        <option value="4">0.25×</option>
+        <option value="2">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="0.5">2×</option>
+        <option value="0.25">4×</option>
+      </select>
+      <select id="sort" class="select" title="Grid order">
+        <option value="fitness">by fitness</option>
+        <option value="score">by score</option>
+        <option value="steps">by survival</option>
+      </select>
+      <select id="limit" class="select" title="Agents shown">
+        <option value="24">24 agents</option>
+        <option value="60" selected>60 agents</option>
+        <option value="120">120 agents</option>
+        <option value="0">all</option>
+      </select>
+    </div>
+
+    <div class="grid" id="grid"></div>
+    <p class="empty" id="grid-empty">No generation loaded yet.</p>
+  </section>
+
+  <section class="panel span-2">
+    <div class="panel-head">
+      <h2>Export model</h2>
+      <span class="tag" id="export-availability"></span>
+    </div>
+    <div class="export">
+      <div class="export-controls">
+        <label class="field">
+          <span>Generation to export</span>
+          <input type="number" id="export-gen" min="0" placeholder="latest">
+        </label>
+        <button class="btn" id="btn-preview">Calculate</button>
+        <button class="btn primary" id="btn-export" disabled>Export .pt</button>
+      </div>
+      <div class="export-report" id="export-report">
+        <p class="hint">
+          Training writes compact <code>.npz</code> checkpoints. Choose a generation
+          and calculate to see exactly what a standalone <code>.pt</code> model would
+          contain before anything is written to disk.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Run detail</h2></div>
+    <dl class="detail" id="run-detail"></dl>
+  </section>
+
+</main>
+
+<div class="agent-sheet" id="agent-sheet" hidden>
+  <div class="sheet-head">
+    <h3 id="sheet-title">agent</h3>
+    <button class="btn icon" id="sheet-close" title="Close">✕</button>
+  </div>
+  <div class="sheet-body" id="sheet-body"></div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evolvarium"
+version = "0.1.0"
+description = "Neuroevolution of Snake-playing agents with a live population dashboard"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# torch is needed only to export a standalone .pt model from the dashboard.
+# Training and checkpointing never import it.
+export = ["torch>=2.0"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+evolvarium = "evolvarium.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["evolvarium*"]
+
+[tool.setuptools.package-data]
+"evolvarium.web" = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
