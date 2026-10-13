@@ -310,7 +310,9 @@ def command_specs(_: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="evolvarium", description="Neuroevolution of Snake agents")
+    parser = argparse.ArgumentParser(
+        prog="evolvarium", description="Neuroevolution of Snake agents"
+    )
     sub = parser.add_subparsers(dest="command")
 
     train = sub.add_parser("train", help="run evolution with the live dashboard")

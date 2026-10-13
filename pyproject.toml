@@ -29,6 +29,9 @@ include = ["evolvarium*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# A later -m on the command line replaces this one, so `pytest -m slow` runs only those.
+addopts = "-m 'not slow'"
+markers = ["slow: replays a whole held-out block; under a minute"]
 
 [tool.ruff]
 line-length = 100

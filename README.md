@@ -1,5 +1,7 @@
 # Evolvarium
 
+[![tests](https://github.com/BigDonalds/Evolvarium/actions/workflows/tests.yml/badge.svg)](https://github.com/BigDonalds/Evolvarium/actions/workflows/tests.yml)
+
 A platform that trains game-playing agents and NPC behaviour by neuroevolution,
 from a user's own environment, for people with no background in machine learning.
 
@@ -29,6 +31,11 @@ pip install -e ".[dev]"
 python -m evolvarium train --open
 python -m pytest
 ```
+
+`python -m pytest -m slow` replays all 60 held-out games of the model in
+`models/` and checks each game's score, length and cause of death against the
+record in `tests/data`. It takes under a minute. CI runs both on Linux, Windows
+and macOS.
 
 `python -m evolvarium --help` lists the other commands. The full reference for
 the baseline is Snake-AI's
