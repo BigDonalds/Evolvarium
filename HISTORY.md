@@ -126,9 +126,9 @@ record, move for move, and passes the suite. On a cool machine it plays a move
 1.31 times as fast as the x86-64 build. Under steady load the gap widens, since
 the emulated build slows more. Replaying the 60 games three times on each,
 alternating between the two, took 28.1 to 28.3 s on ARM64 and 42.5 to 44.8 s on
-x86-64, 1.55 times as fast, and the pool ran 1.5 to 1.6 times as fast. CI does
-not run on Windows on ARM, so the replay here is the only check on that
-platform.
+x86-64, 1.55 times as fast, and the pool ran 1.5 to 1.6 times as fast. Windows
+on ARM was added to CI after this, on Python 3.11 and 3.14, the oldest and
+newest with an ARM64 build.
 
 ## Exact resume - the random state and species go into checkpoints
 

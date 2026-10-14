@@ -12,6 +12,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.10", "3.14"]
+        # No 3.10 is built for Windows on ARM, so 3.11 is the oldest there.
+        include:
+          - os: windows-11-arm
+            python: "3.11"
+          - os: windows-11-arm
+            python: "3.14"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
