@@ -12,7 +12,7 @@ Endpoints
     POST /api/control               hold / continue / run free
     GET  /api/checkpoints           checkpoints on disk
     GET  /api/export/preview?n=N    export report, writes nothing
-    POST /api/export                write the .pt model
+    POST /api/export                write the model file
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from ..persistence import checkpoint, export_torch
+from ..persistence import checkpoint, export_model
 from ..telemetry.history import lineage_summaries
 
 if TYPE_CHECKING:  # the trainer imports this module, so keep the edge one-way
@@ -66,8 +66,8 @@ class DashboardServer:
             target=self._httpd.serve_forever, name="dashboard", daemon=True
         )
         self._thread.start()
-        # Warm the export dependency off the request path.
-        export_torch.preload()
+        # Warm torch, for the export's .pt copy, off the request path.
+        export_model.preload()
         return True
 
     def stop(self) -> None:
@@ -154,15 +154,18 @@ class DashboardServer:
         return generation, None
 
     def _export_destination(self) -> Path:
-        return self.trainer.config.paths.exports_dir / "evolvarium.pt"
+        return self.trainer.config.paths.exports_dir / "evolvarium.json"
 
     def export_preview(self, generation: int | None) -> dict:
         resolved, genome = self._genome_for(generation)
-        report = export_torch.build_report(
+        config = self.trainer.config
+        report = export_model.build_report(
             generation=resolved,
             genome=genome,
             summaries=lineage_summaries(self.trainer.run_dir),
-            config=self.trainer.config,
+            board=config.board,
+            episode=config.episode,
+            features=config.features,
             architecture=self.trainer.population.architecture,
             feature_spec=self.trainer.population.feature_spec,
             run_id=self.trainer.run_id,
@@ -183,16 +186,13 @@ class DashboardServer:
             }
 
         report = self.export_preview(generation)
-        try:
-            return export_torch.write_model(
-                report=report,
-                genome=genome,
-                architecture=self.trainer.population.architecture,
-                destination=self._export_destination(),
-                archive_dir=self.trainer.config.paths.exports_dir / "archive",
-            )
-        except export_torch.TorchUnavailable as error:
-            return {"error": str(error)}
+        return export_model.write_model(
+            report=report,
+            genome=genome,
+            architecture=self.trainer.population.architecture,
+            destination=self._export_destination(),
+            archive_dir=self.trainer.config.paths.exports_dir / "archive",
+        )
 
 
 def _make_handler(server: DashboardServer):

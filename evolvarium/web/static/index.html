@@ -128,13 +128,14 @@
           <input type="number" id="export-gen" min="0" placeholder="latest">
         </label>
         <button class="btn" id="btn-preview">Calculate</button>
-        <button class="btn primary" id="btn-export" disabled>Export .pt</button>
+        <button class="btn primary" id="btn-export" disabled>Export model</button>
       </div>
       <div class="export-report" id="export-report">
         <p class="hint">
           Training writes compact <code>.npz</code> checkpoints. Choose a generation
-          and calculate to see exactly what a standalone <code>.pt</code> model would
-          contain before anything is written to disk.
+          and calculate to see exactly what the standalone model would contain before
+          anything is written to disk. The model is a JSON file that
+          <code>player.py</code> runs with plain Python.
         </p>
       </div>
     </div>

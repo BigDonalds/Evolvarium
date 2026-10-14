@@ -21,7 +21,7 @@ from .held_out import (
     resolve_targets,
     run_context,
 )
-from .persistence import checkpoint, export_torch
+from .persistence import checkpoint, export_model
 from .telemetry.history import lineage_summaries
 from .telemetry.reporter import ConsoleReporter
 from .trainer import Trainer
@@ -199,19 +199,18 @@ def command_export(args: argparse.Namespace) -> int:
     if path is None or not path.exists():
         print("  no checkpoint found")
         return 1
-    if not export_torch.torch_available():
-        print("  torch is not installed; run 'pip install torch' to export a .pt model")
-        return 1
 
     import numpy as np
 
+    # The rules the run was trained under, which the model file records.
+    context = run_context(path)
     selection = None
     if args.pick == "best-average":
         requested = args.workers if args.workers is not None else CONFIG.evolution.workers
         candidates = candidates_from(path)
         print(f"  choosing among {len(candidates)} genomes by their average; "
               "this plays a few thousand games")
-        choice = choose_by_average(candidates, run_context(path), resolve_workers(requested))
+        choice = choose_by_average(candidates, context, resolve_workers(requested))
         genome = choice.genome
         selection = choice.to_dict()
         against = ("" if choice.champion_mean is None
@@ -231,15 +230,17 @@ def command_export(args: argparse.Namespace) -> int:
     from .nn.network import Architecture
 
     architecture = Architecture.from_dict(population_meta["architecture"])
-    spec = FeatureSpec(population_meta["feature_spec"], config.features)
-    destination = config.paths.exports_dir / f"{args.name}.pt"
+    spec = FeatureSpec(context.spec_name, context.features)
+    destination = config.paths.exports_dir / f"{args.name}.json"
     run_dir = path.parent.parent
 
-    report = export_torch.build_report(
+    report = export_model.build_report(
         generation=int(population_meta.get("generation", 0)),
         genome=genome,
         summaries=lineage_summaries(run_dir),
-        config=config,
+        board=context.board,
+        episode=context.episode,
+        features=context.features,
         architecture=architecture,
         feature_spec=spec,
         run_id=run_dir.name,
@@ -247,7 +248,7 @@ def command_export(args: argparse.Namespace) -> int:
     )
     if selection:
         report["selection"] = selection
-    result = export_torch.write_model(
+    result = export_model.write_model(
         report=report,
         genome=genome,
         architecture=architecture,
@@ -255,6 +256,10 @@ def command_export(args: argparse.Namespace) -> int:
         archive_dir=config.paths.exports_dir / "archive",
     )
     print(f"  wrote {result['path']} ({result['size_bytes'] / 1024:.1f} KiB)")
+    if result["pt"]:
+        print(f"  wrote {result['pt']}")
+    else:
+        print("  torch is not installed, so no .pt copy was written")
     return 0
 
 
@@ -426,7 +431,9 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("path", nargs="?", default=None)
     inspect.set_defaults(func=command_inspect)
 
-    export = sub.add_parser("export", help="write a standalone .pt model")
+    export = sub.add_parser(
+        "export", help="write a standalone JSON model, and a .pt copy if torch is installed"
+    )
     export.add_argument("--checkpoint", default=None)
     export.add_argument("--name", default="evolvarium",
                         help="file stem for the export, so several models stay apart; "
@@ -446,8 +453,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument(
         "targets", nargs="*",
-        help="run directories, run ids, checkpoint files or glob patterns; "
-             "defaults to the newest run",
+        help="run directories, run ids, checkpoint files, exported .json models or glob "
+             "patterns; defaults to the newest run",
     )
     evaluate.add_argument(
         "--episodes", type=int, default=None,

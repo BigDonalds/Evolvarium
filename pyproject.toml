@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# torch is needed only to export a standalone .pt model from the dashboard.
+# torch is needed only for the .pt copy written beside an exported JSON model.
 # Training and checkpointing never import it.
 export = ["torch>=2.0"]
 dev = ["pytest>=7.4"]

@@ -10,6 +10,62 @@ directly.
 
 ---
 
+## A model file of its own - JSON export and a player that needs nothing installed
+
+An exported model used to be a `.pt` file, which takes PyTorch to write and to
+read, with a JSON file beside it describing the run. The JSON named the inputs
+and the actions but held no weights, and the `.pt` held the weights but not the
+board, the episode limits or the encoder's settings, so neither file was enough
+on its own to play the model again under the rules it learned.
+
+Exporting now writes one JSON file that is the model. It holds every weight and
+bias, the names of the inputs in the order the network reads them, the actions,
+the encoder and its settings, the board and episode rules, the run and
+generation it came from and the training report. `evolvarium/player.py` reads it
+and plays it with the standard library alone. The player imports nothing from
+the rest of the package, so it can be copied next to a game that never installs
+Evolvarium, and its docstring is the format's specification. The file carries a
+version number. The player refuses a version it does not know, and for a file it
+cannot run it says what is wrong, down to the layer and the row.
+
+Layers store one row of weights per output, the layout `torch.nn.Linear` uses,
+so the file maps onto other frameworks without transposing anything. Each weight
+is written as the exact decimal value of its float32. That costs about 24 bytes
+a weight, but reading the file back gives the same genome bit for bit, which a
+test checks with weights spread over 60 orders of magnitude. The 81.5 model's
+file is 13,745 bytes with its training report.
+
+**Float64 against float32.** The engine computes in float32 with NumPy and the
+player in float64 with plain Python, from the same numbers. They can only choose
+differently where the top two outputs come within rounding of each other, so
+what matters is how close the model's calls get. Over all 194,094 moves of its
+held-out games the closest is 2.7e-7 apart, at move 542 of seed 900030. The
+float64 outputs are never more than 7.3e-7 from the float32 ones, and at that
+move they are 8.1e-8 away, so the player makes the engine's choice on every
+move. The slow suite now also plays the whole block with the player choosing,
+asks the engine at every move, and checks that the two never differ and that
+every game ends as recorded. The quick suite does the same for its six games.
+
+**Speed.** The player takes 28 µs a move on the ARM64 build of Python, against
+5 µs for the engine's network, and 51 µs against 11 µs on the x86-64 build.
+That is still small next to the 125 µs the inputs take on ARM64, and a game that
+only plays a trained model calls it once a move.
+
+**Torch.** Exporting no longer needs it. With torch installed an export also
+writes a `.pt` copy holding the same contents, the genome, and each layer's
+weights and biases as tensors. It loads with `torch.load`'s default safe mode,
+without `weights_only=False`. The dashboard's export panel says which files will
+be written.
+
+**Scoring a file.** `evaluate` takes a model file as well as a checkpoint or a
+run, and scores it under the rules the file records. The shipped model,
+`models/v3-seed99-gen155-81.json`, is rewritten in the new format with the same
+weights, export time, selection details and training report. On its own it
+scores 81.45 over the held-out block, as the run's checkpoint does. The `.pt`
+beside it stays as it was at the baseline, since the record in `tests/data`
+names it, and a test that runs without torch now checks the record's weights and
+rules against the JSON file too.
+
 ## Where a move's time goes - a profiler, and what it means for batching
 
 One of the larger pieces of planned work is an evaluator that steps a whole

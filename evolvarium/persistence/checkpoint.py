@@ -4,8 +4,8 @@ Checkpoints are numpy .npz archives. Nothing here imports torch: the training
 loop should not carry a deep-learning framework just to persist a few float32
 arrays, and .npz keeps checkpoints readable by any numpy install.
 
-Exporting a standalone .pt model is a separate, explicit action that lives in
-`export_torch` and is triggered from the dashboard.
+Exporting a standalone model is a separate, explicit action that lives in
+`export_model` and is triggered from the dashboard or the command line.
 
 Every checkpoint records the feature spec and architecture it was trained under.
 Loading refuses a mismatch rather than reshaping the genome to fit, because a

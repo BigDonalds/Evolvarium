@@ -43,6 +43,25 @@ the baseline is Snake-AI's
 [COMMANDS.md](https://github.com/BigDonalds/Snake-AI/blob/v0.2.0/COMMANDS.md),
 reading `snake_ai` there as `evolvarium`.
 
+## Exported models
+
+`python -m evolvarium export`, or the export panel on the dashboard, writes a
+trained model as one JSON file: its weights, the names of its inputs in the
+order the network reads them, its actions and the game rules it learned under.
+`evolvarium/player.py` runs that file with the standard library alone, so it can
+be copied next to a game that never installs Evolvarium:
+
+```python
+from player import Player
+
+player = Player.load("v3-seed99-gen155-81.json")
+move = player.action(inputs)  # "left", "straight" or "right"
+```
+
+The player's docstring describes the format. `python -m evolvarium evaluate`
+scores a model file on the held-out games under the rules it records. With
+torch installed, an export also writes a `.pt` copy.
+
 ## Documents
 
 - [HISTORY.md](HISTORY.md): what changed after the baseline, and what it measured

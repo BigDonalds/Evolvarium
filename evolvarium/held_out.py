@@ -38,7 +38,8 @@ from .config import (
 )
 from .evolution.evaluation import EvalContext, EvalResult, make_runner
 from .evolution.pool import EvaluationPool, resolve_workers
-from .persistence import checkpoint
+from .features import available_specs
+from .persistence import checkpoint, model_file
 
 # Sections that decide which champion a run ends with. Paths, the dashboard,
 # retention and the worker count change how a run is watched or how fast it
@@ -236,7 +237,7 @@ def _group_notes(group_: Group) -> list[str]:
 # ------------------------------------------------------------------- targets
 
 def resolve_targets(targets: list[str], runs_dir: Path) -> list[Path]:
-    """Turn run directories, run ids, checkpoint files or patterns into checkpoints.
+    """Turn run directories, run ids, checkpoint files, model files or patterns into files.
 
     Patterns are expanded here as well as by the shell, because PowerShell hands
     them to Python untouched.
@@ -247,19 +248,21 @@ def resolve_targets(targets: list[str], runs_dir: Path) -> list[Path]:
             matches = sorted(glob.glob(target)) or sorted(glob.glob(str(runs_dir / target)))
             paths = [p for p in (_checkpoint_in(Path(m)) for m in matches) if p is not None]
             if not paths:
-                raise TargetError(f"{target!r} matches no checkpoint")
+                raise TargetError(f"{target!r} matches no checkpoint or model file")
             found.extend(paths)
             continue
         path = _checkpoint_in(Path(target)) or _checkpoint_in(runs_dir / target)
         if path is None:
-            raise TargetError(f"{target!r} is not a checkpoint, a run directory or a run id")
+            raise TargetError(
+                f"{target!r} is not a checkpoint, a model file, a run directory or a run id"
+            )
         found.append(path)
     # A pattern and an explicit path can name the same run; score it once.
     return list(dict.fromkeys(p.resolve() for p in found))
 
 
 def _checkpoint_in(path: Path) -> Path | None:
-    if path.is_file() and path.suffix == ".npz":
+    if path.is_file() and path.suffix in (".npz", ".json"):
         return path
     latest = path / "checkpoints" / "latest.npz"
     return latest if latest.is_file() else None
@@ -267,6 +270,8 @@ def _checkpoint_in(path: Path) -> Path | None:
 
 def load_champion(path: Path) -> Champion:
     """Read a checkpoint's best genome and the conditions it was trained under."""
+    if path.suffix == ".json":
+        return _model_champion(path)
     try:
         meta = checkpoint.read_meta(path)
         with np.load(path, allow_pickle=False) as archive:
@@ -291,6 +296,47 @@ def load_champion(path: Path) -> Champion:
         genome=genome,
         context=run_context(path, meta),
         settings=search_settings(recorded) if recorded else None,
+    )
+
+
+def _model_champion(path: Path) -> Champion:
+    """An exported model, scored under the rules its file records."""
+    try:
+        document = model_file.read(path)
+        genome, architecture = model_file.to_genome(document)
+    except (OSError, model_file.ModelError) as error:
+        raise TargetError(f"cannot read {path}: {error}") from error
+    game = document.get("game") or {}
+    inputs = document["inputs"]
+    spec = inputs.get("encoding")
+    if game.get("name") != "snake" or spec not in available_specs():
+        raise TargetError(
+            f"{path} is a model of {game.get('name')!r} with {spec!r} inputs, "
+            "which this engine cannot play"
+        )
+    source = document.get("source") or {}
+    training = (document.get("report") or {}).get("training") or {}
+    context = EvalContext(
+        spec_name=spec,
+        architecture=architecture.to_dict(),
+        board=_section(BoardConfig, game.get("board")),
+        episode=_section(EpisodeConfig, game.get("episode")),
+        fitness=FitnessConfig(),
+        features=dataclasses.replace(
+            _section(FeatureConfig, inputs.get("settings")), spec=spec
+        ),
+        exploration_rate=0.0,
+        replay_steps=CONFIG.history.replay_steps,
+    )
+    return Champion(
+        run_id=str(source.get("run") or path.stem),
+        path=path,
+        seed=None,
+        generation=int(source.get("generation") or 0),
+        train_best=int(training.get("best_score", 0)),
+        genome=genome,
+        context=context,
+        settings=None,
     )
 
 
@@ -380,11 +426,14 @@ def group(champions: list[Champion], same_config: bool = False) -> list[Group]:
             label = describe(c.settings)
         else:
             # Known only by encoding and network shape. Kept apart rather than
-            # assumed to match anything else.
-            identity = "unrecorded " + json.dumps(
+            # assumed to match anything else. An exported model records its
+            # game and inputs but not the search that produced it.
+            exported = c.path.suffix == ".json"
+            identity = ("exported " if exported else "unrecorded ") + json.dumps(
                 [c.context.spec_name, c.context.architecture], sort_keys=True
             )
-            label = f"configuration not recorded, {c.context.spec_name}"
+            kind = "exported model" if exported else "configuration not recorded"
+            label = f"{kind}, {c.context.spec_name}"
         key = f"{identity} @ {c.generation}"
         if key not in groups:
             groups[key] = Group(label, c.generation, [])

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from evolvarium.config import CONFIG
 from evolvarium.evolution.population import Population
-from evolvarium.persistence import checkpoint, export_torch
+from evolvarium.persistence import checkpoint, export_model, model_file
 from evolvarium.telemetry.history import HistoryStore, lineage_summaries
 from evolvarium.web.control import TrainingGate
 
@@ -133,23 +134,32 @@ def test_lineage_follows_resumed_runs(tmp_path):
     assert [s["generation"] for s in lineage_summaries(tmp_path / "first")] == list(range(12))
 
 
-def test_export_report_writes_nothing(small_config, tmp_path):
-    population = Population(small_config, seed=8)
-    population.run_generation()
-    destination = tmp_path / "exports" / "evolvarium.pt"
+SUMMARIES = [{"generation": 0, "max_episode_score": 3, "scoring_fraction": 0.6,
+              "mean_score": 0.4, "mean_steps": 120, "episodes": 8, "elapsed": 1.0,
+              "best_fitness": 500.0, "deaths": {"wall": 8}, "record": True}]
 
-    report = export_torch.build_report(
+
+def export_report(config, population, destination, genome):
+    return export_model.build_report(
         generation=0,
-        genome=population.members[0].genome,
-        summaries=[{"generation": 0, "max_episode_score": 3, "scoring_fraction": 0.6,
-                    "mean_score": 0.4, "mean_steps": 120, "episodes": 8, "elapsed": 1.0,
-                    "best_fitness": 500.0, "deaths": {"wall": 8}, "record": True}],
-        config=small_config,
+        genome=genome,
+        summaries=SUMMARIES,
+        board=config.board,
+        episode=config.episode,
+        features=config.features,
         architecture=population.architecture,
         feature_spec=population.feature_spec,
         run_id="run-test",
         destination=destination,
     )
+
+
+def test_export_report_writes_nothing(small_config, tmp_path):
+    population = Population(small_config, seed=8)
+    population.run_generation()
+    destination = tmp_path / "exports" / "evolvarium.json"
+
+    report = export_report(small_config, population, destination, population.members[0].genome)
 
     assert not destination.exists()
     assert report["parameter_count"] == population.architecture.genome_size
@@ -159,6 +169,52 @@ def test_export_report_writes_nothing(small_config, tmp_path):
     assert report["training"]["best_score"] == 3
 
 
+def test_export_needs_no_torch(small_config, tmp_path, monkeypatch):
+    monkeypatch.setattr(export_model, "torch_available", lambda: False)
+    population = Population(small_config, seed=9)
+    genome = population.members[0].genome
+    destination = tmp_path / "exports" / "evolvarium.json"
+    report = export_report(small_config, population, destination, genome)
+
+    result = export_model.write_model(
+        report=report, genome=genome, architecture=population.architecture,
+        destination=destination, archive_dir=tmp_path / "exports" / "archive",
+    )
+
+    assert result["pt"] is None
+    assert [Path(p).suffix for p in result["archived"]] == [".json"]
+    assert result["size_bytes"] == destination.stat().st_size == report["estimated_size_bytes"]
+    document = model_file.read(destination)
+    restored, architecture = model_file.to_genome(document)
+    assert np.array_equal(restored, genome)
+    assert architecture == population.architecture
+    assert document["inputs"]["encoding"] == small_config.features.spec
+    assert document["game"]["board"]["width"] == small_config.board.width
+    assert document["report"]["training"]["best_score"] == 3
+
+
+def test_export_writes_a_matching_pt_copy(small_config, tmp_path):
+    torch = pytest.importorskip("torch")
+    population = Population(small_config, seed=10)
+    genome = population.members[0].genome
+    destination = tmp_path / "exports" / "evolvarium.json"
+    report = export_report(small_config, population, destination, genome)
+
+    result = export_model.write_model(
+        report=report, genome=genome, architecture=population.architecture,
+        destination=destination,
+    )
+
+    assert result["pt"] == str(destination.with_suffix(".pt"))
+    model = torch.load(result["pt"])
+    assert np.array_equal(model["genome"].numpy(), genome)
+    document = model_file.read(destination)
+    for i, layer in enumerate(document["network"]["layers"]):
+        weight = model["parameters"][f"weight_{i}"].numpy()
+        assert weight.shape == (layer["outputs"], layer["inputs"])
+        assert np.array_equal(weight, np.asarray(layer["weights"], dtype=np.float32))
+
+
 def test_achievements_only_count_generations_up_to_the_target():
     summaries = [
         {"generation": 0, "max_episode_score": 1, "scoring_fraction": 0.1, "mean_score": 0.1,
@@ -166,8 +222,8 @@ def test_achievements_only_count_generations_up_to_the_target():
         {"generation": 9, "max_episode_score": 12, "scoring_fraction": 0.95, "mean_score": 1.4,
          "mean_steps": 210, "episodes": 1, "elapsed": 0.1, "best_fitness": 9.0, "deaths": {}},
     ]
-    early = export_torch.compute_achievements([s for s in summaries if s["generation"] <= 0])
-    late = export_torch.compute_achievements(summaries)
+    early = export_model.compute_achievements([s for s in summaries if s["generation"] <= 0])
+    late = export_model.compute_achievements(summaries)
 
     assert not any(a.unlocked for a in early if a.key == "score_10")
     assert any(a.unlocked for a in late if a.key == "score_10")

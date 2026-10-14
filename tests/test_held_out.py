@@ -257,7 +257,6 @@ def test_candidates_cover_the_champion_the_population_and_past_champions(tiny_co
 
 
 def test_export_can_pick_by_average(tiny_config, monkeypatch):
-    pytest.importorskip("torch")
     import evolvarium.cli as cli
 
     run = make_run(tiny_config, 13, "run-m")
@@ -268,8 +267,44 @@ def test_export_can_pick_by_average(tiny_config, monkeypatch):
 
     assert code == 0
     exports = tiny_config.paths.exports_dir
-    sidecar = json.loads((exports / "picked.json").read_text(encoding="utf-8"))
-    assert sidecar["selection"]["rule"] == "best average"
-    assert sidecar["selection"]["candidates"] >= 1
-    archived = list((exports / "archive").glob("*.pt"))
-    assert archived and all(p.name.startswith("picked_gen") for p in archived)
+    document = json.loads((exports / "picked.json").read_text(encoding="utf-8"))
+    assert document["source"]["selection"]["rule"] == "best average"
+    assert document["source"]["selection"]["candidates"] >= 1
+    assert list((exports / "archive").glob("picked_gen*.json"))
+
+
+def test_an_exported_model_scores_like_its_checkpoint(tiny_config, monkeypatch):
+    """The model file alone is enough to replay the run's champion."""
+    import evolvarium.cli as cli
+
+    run = make_run(tiny_config, 14, "run-x")
+    monkeypatch.setattr(cli, "CONFIG", tiny_config)
+    assert main(["export", "--checkpoint", str(latest(run)), "--name", "model"]) == 0
+    model = tiny_config.paths.exports_dir / "model.json"
+    assert held_out.resolve_targets([str(model)], tiny_config.paths.runs_dir) == [model.resolve()]
+
+    stored = held_out.load_champion(latest(run))
+    exported = held_out.load_champion(model)
+    assert exported.run_id == "run-x"
+    assert exported.generation == stored.generation
+    assert np.array_equal(exported.genome, stored.genome)
+    assert exported.context.board == stored.context.board
+    assert exported.context.features == stored.context.features
+
+    held_out.score([stored, exported], list(range(900_000, 900_004)), workers=1)
+    assert np.array_equal(exported.scores, stored.scores)
+
+
+def test_a_model_for_another_game_is_refused(tiny_config, monkeypatch, tmp_path):
+    import evolvarium.cli as cli
+
+    run = make_run(tiny_config, 15, "run-y")
+    monkeypatch.setattr(cli, "CONFIG", tiny_config)
+    assert main(["export", "--checkpoint", str(latest(run)), "--name", "model"]) == 0
+    document = json.loads((tiny_config.paths.exports_dir / "model.json").read_text("utf-8"))
+    document["game"]["name"] = "pong"
+    other = tmp_path / "pong.json"
+    other.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(held_out.TargetError, match="cannot play"):
+        held_out.load_champion(other)

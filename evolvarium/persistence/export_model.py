@@ -1,49 +1,38 @@
-"""Standalone .pt model export.
+"""Standalone model export.
 
-Training never produces a .pt file. Checkpoints are .npz and torch is not
+An export is a JSON model file (see `evolvarium.player` for the format), which
+runs with the standard library alone, and a .pt copy of it when torch is
+installed. Training never produces either. Checkpoints are .npz and torch is not
 imported anywhere in the training path; it is pulled in only when an export is
-actually requested, so a plain training run has no framework dependency.
+actually written, so a plain training run has no framework dependency.
 
 Export is deliberately two-phase. `build_report` gathers the statistics,
-achievements, timings and size estimate for a chosen generation without touching
-the filesystem, so the dashboard can show exactly what is about to be written.
-`write_model` then produces the file.
-
-The exported archive is self-contained: it carries the weights as named tensors,
-the architecture, the input encoding and its column names, and the action space.
-Running the model afterwards needs numpy or torch, not this project.
+achievements, timings and size for a chosen generation without touching the
+filesystem, so the dashboard can show exactly what is about to be written.
+`write_model` then produces the files.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
-import json
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
-from ..config import Config
+from ..config import BoardConfig, EpisodeConfig, FeatureConfig
 from ..features import FeatureSpec
 from ..nn.network import Architecture, PolicyNetwork
-
-FORMAT = "evolvarium-model"
-FORMAT_VERSION = 1
+from . import model_file
 
 USAGE = (
-    "Load with torch.load(path, weights_only=False). Feed the 11 inputs named in "
-    "feature_spec.inputs, in order, through the weight_i/bias_i pairs applying the "
-    "listed hidden activations; argmax of the 3 outputs selects turn "
-    "left / straight / right relative to the snake's current heading."
+    "Load with torch.load(path). parameters holds weight_i and bias_i for each layer, "
+    "weight_i shaped (outputs, inputs) as torch.nn.Linear keeps it. Everything else is "
+    "the JSON model exported with this file; evolvarium/player.py describes the format."
 )
-
-
-class TorchUnavailable(RuntimeError):
-    """Raised when a .pt export is requested without torch installed."""
-
 
 _availability: bool | None = None
 _preload_started = False
@@ -204,8 +193,8 @@ def summarise_training(summaries: list[dict], generation: int) -> dict:
 
 
 def estimate_size(architecture: Architecture) -> int:
-    """Approximate exported file size: float32 parameters plus metadata."""
-    return architecture.genome_size * 4 * 2 + 6144
+    """Approximate size of the JSON model when there is no genome to measure."""
+    return architecture.genome_size * 24 + 3072
 
 
 def build_report(
@@ -213,7 +202,9 @@ def build_report(
     generation: int,
     genome: np.ndarray | None,
     summaries: list[dict],
-    config: Config,
+    board: BoardConfig,
+    episode: EpisodeConfig,
+    features: FeatureConfig,
     architecture: Architecture,
     feature_spec: FeatureSpec,
     run_id: str,
@@ -221,14 +212,17 @@ def build_report(
 ) -> dict:
     """Everything the dashboard shows before an export is confirmed.
 
-    Touches no files.
+    `board`, `episode` and `features` are the rules the genome was trained
+    under; the model file records them. Touches no files.
     """
     achievements = compute_achievements([s for s in summaries if s["generation"] <= generation])
     training = summarise_training(summaries, generation)
     unlocked = [a for a in achievements if a.unlocked]
+    settings = dataclasses.asdict(features)
+    settings.pop("spec")
 
-    return {
-        "ready": genome is not None and torch_available(),
+    report = {
+        "ready": genome is not None,
         "generation": generation,
         "run_id": run_id,
         "torch_available": torch_available(),
@@ -242,14 +236,43 @@ def build_report(
             "name": feature_spec.name,
             "size": feature_spec.size,
             "inputs": list(feature_spec.names),
+            "settings": settings,
         },
-        "board": {"width": config.board.width, "height": config.board.height},
+        "game": {
+            "name": "snake",
+            "board": dataclasses.asdict(board),
+            "episode": dataclasses.asdict(episode),
+        },
         "action_space": ["left", "straight", "right"],
         "training": training,
         "achievements": [a.to_dict() for a in achievements],
         "achievements_unlocked": len(unlocked),
         "achievements_total": len(achievements),
     }
+    if genome is not None:
+        report["estimated_size_bytes"] = len(
+            model_file.dumps(_document(report, genome, architecture)).encode("utf-8")
+        )
+    return report
+
+
+def _document(report: dict, genome: np.ndarray, architecture: Architecture) -> dict:
+    spec = report["feature_spec"]
+    source = {"run": report["run_id"], "generation": report["generation"]}
+    # How the genome was chosen, when it was not simply the stored champion.
+    if report.get("selection"):
+        source["selection"] = report["selection"]
+    return model_file.build(
+        genome=genome,
+        architecture=architecture,
+        input_names=spec["inputs"],
+        encoding=spec["name"],
+        settings=spec["settings"],
+        action_names=report["action_space"],
+        game=report["game"],
+        source=source,
+        report={"training": report["training"], "achievements": report["achievements"]},
+    )
 
 
 def write_model(
@@ -260,66 +283,62 @@ def write_model(
     destination: Path,
     archive_dir: Path | None = None,
 ) -> dict:
-    """Write the .pt archive plus a readable JSON sidecar."""
-    try:
-        import torch
-    except ImportError as exc:
-        raise TorchUnavailable(
-            "exporting a .pt model requires torch; install it with "
-            "'pip install evolvarium[export]' or 'pip install torch'"
-        ) from exc
+    """Write the JSON model to `destination`, and a .pt copy beside it when torch is installed."""
+    if destination.suffix != ".json":
+        raise ValueError(f"the model file is JSON; got destination {destination}")
+    document = _document(report, genome, architecture)
+    size = model_file.write(document, destination)
+    written = [destination]
 
-    network = PolicyNetwork(architecture).load(genome)
-    parameters = {
-        name: torch.from_numpy(array) for name, array in network.layer_arrays().items()
-    }
+    torch_copy = destination.with_suffix(".pt")
+    if torch_available() and _write_torch(document, genome, architecture, torch_copy):
+        written.append(torch_copy)
+    else:
+        torch_copy = None
 
-    payload: dict[str, Any] = {
-        "format": FORMAT,
-        "format_version": FORMAT_VERSION,
-        "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "run_id": report["run_id"],
-        "generation": report["generation"],
-        "architecture": report["architecture"],
-        "feature_spec": report["feature_spec"],
-        "action_space": report["action_space"],
-        "board": report["board"],
-        "genome": torch.from_numpy(np.asarray(genome, dtype=np.float32)),
-        "parameters": parameters,
-        "training": report["training"],
-        "achievements": report["achievements"],
-        "usage": USAGE,
-    }
-    # How the genome was chosen, when it was not simply the stored champion.
-    if report.get("selection"):
-        payload["selection"] = report["selection"]
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    staging = destination.with_suffix(destination.suffix + ".partial")
-    torch.save(payload, staging)
-    staging.replace(destination)
-
-    sidecar = destination.with_suffix(".json")
-    readable = {k: v for k, v in payload.items() if k not in ("genome", "parameters")}
-    readable["parameter_count"] = report["parameter_count"]
-    sidecar.write_text(json.dumps(readable, indent=2), encoding="utf-8")
-
-    archived: str | None = None
+    archived = []
     if archive_dir is not None:
         archive_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        copy = archive_dir / f"{destination.stem}_gen{report['generation']:06d}_{stamp}.pt"
-        copy.write_bytes(destination.read_bytes())
-        archived = str(copy)
+        for path in written:
+            copy = archive_dir / f"{path.stem}_gen{report['generation']:06d}_{stamp}{path.suffix}"
+            copy.write_bytes(path.read_bytes())
+            archived.append(str(copy))
 
-    size = destination.stat().st_size
     return {
         "written": True,
         "path": str(destination),
-        "sidecar": str(sidecar),
+        "pt": None if torch_copy is None else str(torch_copy),
         "archived": archived,
         "size_bytes": size,
         "generation": report["generation"],
         "parameter_count": report["parameter_count"],
         "achievements_unlocked": report["achievements_unlocked"],
     }
+
+
+def _write_torch(document: dict, genome: np.ndarray, architecture: Architecture,
+                 path: Path) -> bool:
+    """The .pt copy: the JSON model plus the weights as tensors."""
+    try:
+        import torch
+    except ImportError:
+        return False
+
+    genome = np.asarray(genome, dtype=np.float32)
+    parameters = {}
+    for name, array in PolicyNetwork(architecture).load(genome).layer_arrays().items():
+        if name.startswith("weight_"):
+            array = np.ascontiguousarray(array.T)
+        parameters[name] = torch.from_numpy(array)
+
+    payload = {
+        **document,
+        "usage": USAGE,
+        "genome": torch.from_numpy(genome.copy()),
+        "parameters": parameters,
+    }
+    staging = path.with_suffix(path.suffix + ".partial")
+    torch.save(payload, staging)
+    staging.replace(path)
+    return True

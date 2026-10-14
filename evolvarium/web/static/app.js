@@ -507,12 +507,12 @@ async function previewExport() {
 function renderExportReport(report) {
   const t = report.training || {};
   const availability = $("export-availability");
-  if (!report.torch_available) {
-    availability.textContent = "torch not installed";
-    availability.className = "tag off";
-  } else {
-    availability.textContent = "torch ready";
+  if (report.torch_available) {
+    availability.textContent = ".json and .pt";
     availability.className = "tag ok";
+  } else {
+    availability.textContent = ".json";
+    availability.className = "tag";
   }
 
   const cards = [
@@ -545,7 +545,7 @@ function renderExportReport(report) {
   if (!report.genome_available) {
     notice = `<p class="hint" style="color:var(--warn)">No champion genome is archived at or before generation ${report.requested_generation}.</p>`;
   } else if (!report.torch_available) {
-    notice = `<p class="hint" style="color:var(--warn)">Install torch to write a .pt file: <code>pip install torch</code></p>`;
+    notice = `<p class="hint">Only the JSON model is written. <code>pip install torch</code> adds a .pt copy beside it.</p>`;
   }
 
   $("export-report").innerHTML = `
@@ -578,7 +578,8 @@ async function doExport() {
     node.textContent =
       `${result.path} · ${fmt.bytes(result.size_bytes)} · ` +
       `${fmt.int(result.parameter_count)} params · ` +
-      `${result.achievements_unlocked} achievements`;
+      `${result.achievements_unlocked} achievements` +
+      (result.pt ? ` · ${result.pt}` : "");
     $("export-report").appendChild(node);
   } catch (error) {
     toast(`Export failed: ${error.message}`, "bad");

@@ -21,6 +21,7 @@ import pytest
 
 from evolvarium.config import BoardConfig, EpisodeConfig, FeatureConfig, FitnessConfig
 from evolvarium.evolution.evaluation import EvalContext, make_runner
+from evolvarium.persistence import model_file
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = json.loads((ROOT / "tests" / "data" / "held_out_81.json").read_text(encoding="utf-8"))
@@ -78,3 +79,16 @@ def test_stored_genome_is_the_shipped_model():
 
     shipped = np.asarray(model["genome"], dtype=np.float32)
     assert np.array_equal(shipped, np.array(GOLDEN["genome"], dtype=np.float32))
+
+
+def test_shipped_model_file_holds_the_genome_and_its_rules():
+    document = model_file.read((ROOT / GOLDEN["model"]).with_suffix(".json"))
+    genome, architecture = model_file.to_genome(document)
+
+    assert np.array_equal(genome, np.array(GOLDEN["genome"], dtype=np.float32))
+    assert architecture.to_dict() == GOLDEN["architecture"]
+    assert document["inputs"]["encoding"] == GOLDEN["features"]["spec"]
+    settings = {**document["inputs"]["settings"], "spec": document["inputs"]["encoding"]}
+    assert settings == GOLDEN["features"]
+    assert document["game"]["board"] == GOLDEN["board"]
+    assert document["game"]["episode"] == GOLDEN["episode"]
