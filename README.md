@@ -24,7 +24,8 @@ At the baseline the engine trains Snake and nothing else. Its best model, in
 
 ## Running
 
-Python 3.10 or newer.
+Python 3.10 or newer. On Windows on ARM, use the ARM64 build of Python. The
+x86-64 build runs under emulation and trains about a third slower.
 
 ```bash
 pip install -e ".[dev]"

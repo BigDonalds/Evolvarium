@@ -13,9 +13,10 @@ responsiveness.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
-from .evaluation import EvalContext, EvalResult, init_worker, run_task
+from .evaluation import EvalContext, init_worker, run_task
 
 
 def resolve_workers(requested: int) -> int:
@@ -46,8 +47,14 @@ class EvaluationPool:
     def active(self) -> bool:
         return self._executor is not None
 
-    def map(self, tasks: Iterable[tuple]) -> list[EvalResult]:
+    def map(
+        self, tasks: Iterable[tuple], run: Callable[[tuple], Any] = run_task
+    ) -> list[Any]:
         """Score every task, returning results in the order given.
+
+        `run` is called on each task inside a worker. It has to be a module-level
+        function so the worker can import it, and anything other than `run_task`
+        is there to wrap it: the profiler times tasks this way.
 
         Order matters: the parent applies results back onto its own list of
         members positionally, so the mapping must not depend on which worker
@@ -69,7 +76,7 @@ class EvaluationPool:
         tasks = list(tasks)
         if self._executor is None:
             raise RuntimeError("pool is not active; the caller should run serially")
-        return list(self._executor.map(run_task, tasks, chunksize=1))
+        return list(self._executor.map(run, tasks, chunksize=1))
 
     def close(self) -> None:
         if self._executor is not None:

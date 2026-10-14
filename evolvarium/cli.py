@@ -303,6 +303,70 @@ def command_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_profile(args: argparse.Namespace) -> int:
+    import zipfile
+
+    import numpy as np
+
+    from .profiling import profile
+
+    path = Path(args.checkpoint) if args.checkpoint else _latest_checkpoint(CONFIG.paths.runs_dir)
+    if path is None or not path.exists():
+        print("  no checkpoint found")
+        return 1
+    try:
+        meta = checkpoint.read_meta(path)
+        context = run_context(path, meta)
+        with np.load(path, allow_pickle=False) as archive:
+            population = np.array(archive["genomes"], dtype=np.float32)
+            champion = (np.array(archive["best_genome"], dtype=np.float32)
+                        if "best_genome" in archive.files else None)
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile) as error:
+        print(f"  cannot read {path}: {error}")
+        return 1
+
+    if args.member is None:
+        if champion is None:
+            print("  checkpoint holds no champion yet; name a population member with --member")
+            return 1
+        genome, chosen = champion, "stored champion"
+    elif 0 <= args.member < len(population):
+        genome, chosen = population[args.member], f"population member {args.member}"
+    else:
+        print(f"  --member must be between 0 and {len(population) - 1}")
+        return 1
+
+    games = args.games if args.games is not None else CONFIG.held_out.episodes
+    if games < 1:
+        print("  --games must be at least 1")
+        return 1
+    seeds = dataclasses.replace(CONFIG.held_out, episodes=games).seeds
+    requested = args.workers if args.workers is not None else CONFIG.evolution.workers
+    trials = int((meta.get("evolution") or {}).get("evaluation_episodes")
+                 or CONFIG.evolution.evaluation_episodes)
+    run = path.parent.parent.name if path.parent.name == "checkpoints" else path.parent.name
+
+    print(f"  profiling the {chosen} of {run}, generation {meta.get('generation', 0)}, "
+          f"on {games} held-out game{'s' if games != 1 else ''}")
+    result = profile(
+        context, genome, population, seeds,
+        source=f"{chosen}, {run} generation {meta.get('generation', 0)}",
+        workers=resolve_workers(requested), rounds=args.rounds, trials=trials,
+        note=lambda text: print(f"  {text}", flush=True),
+    )
+
+    print()
+    for line in result.lines():
+        print(line)
+    if args.json:
+        destination = Path(args.json)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(result.to_dict(), indent=2, default=str),
+                               encoding="utf-8")
+        print(f"\n  wrote {destination}")
+    return 0
+
+
 def command_specs(_: argparse.Namespace) -> int:
     for name, size in available_specs().items():
         print(f"  {name:<20} {size} inputs")
@@ -403,6 +467,23 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--json", default=None, metavar="PATH",
                           help="also write every episode's score to this file")
     evaluate.set_defaults(func=command_evaluate)
+
+    profile = sub.add_parser(
+        "profile", help="measure where the time in a move goes, and the worker pool's overhead"
+    )
+    profile.add_argument("checkpoint", nargs="?", default=None,
+                         help="checkpoint file; defaults to the newest run")
+    profile.add_argument("--member", type=int, default=None,
+                         help="profile this population member's games instead of the champion's")
+    profile.add_argument("--games", type=int, default=None,
+                         help=f"held-out games to play, default {CONFIG.held_out.episodes}")
+    profile.add_argument("--rounds", type=int, default=2,
+                         help="times to score the whole population on the pool; 0 skips it")
+    profile.add_argument("--workers", type=int, default=None,
+                         help="pool size; 0 uses every core but one")
+    profile.add_argument("--json", default=None, metavar="PATH",
+                         help="also write the measurements to this file")
+    profile.set_defaults(func=command_profile)
 
     specs = sub.add_parser("specs", help="list feature encodings")
     specs.set_defaults(func=command_specs)
