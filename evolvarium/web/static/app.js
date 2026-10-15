@@ -164,9 +164,10 @@ function renderStatus(status) {
 function renderRunDetail(status) {
   const rows = [
     ["Run", status.run_id],
-    ["Encoding", `${status.feature_spec} · ${status.input_size} inputs`],
+    ["Game", status.game],
+    ["Encoding", `${status.encoding} · ${status.input_size} inputs`],
     ["Genome", `${fmt.int(status.genome_size)} params`],
-    ["Board", `${status.board.width} × ${status.board.height}`],
+    ["Board", status.scene ? `${status.scene.width} × ${status.scene.height}` : "–"],
     ["Population", fmt.int(status.population_size)],
     ["Episodes", fmt.int(status.total_episodes)],
     ["Episodes / s", fmt.dec(status.episodes_per_second, 1)],
@@ -329,7 +330,7 @@ async function loadGeneration(number) {
   }
 
   state.generation = data;
-  state.board = data.board;
+  state.board = data.scene;
   state.agents = data.agents || [];
   for (const agent of state.agents) agent.episode = expandReplay(agent.replay);
   state.maxFrames = state.agents.reduce((m, a) => Math.max(m, a.episode.steps), 0);
@@ -344,8 +345,8 @@ async function loadGeneration(number) {
 
 function renderGenerationSummary(summary) {
   if (!summary) { $("gen-summary").innerHTML = ""; return; }
-  const deaths = summary.deaths || {};
-  const deathText = Object.entries(deaths)
+  const ends = summary.ends || summary.deaths || {};
+  const endText = Object.entries(ends)
     .sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `${k} ${v}`)
     .join(" · ") || "–";
@@ -354,12 +355,12 @@ function renderGenerationSummary(summary) {
     ["Generation", summary.generation, summary.record ? "record" : ""],
     ["Best score", summary.max_episode_score, summary.record ? "record" : ""],
     ["Mean score", fmt.dec(summary.mean_score, 3), ""],
-    ["Feeding", fmt.pct(summary.scoring_fraction), ""],
+    ["Scored", fmt.pct(summary.scoring_fraction), ""],
     ["Best fitness", fmt.int(summary.best_fitness), ""],
     ["Mean steps", fmt.dec(summary.mean_steps, 1), ""],
     ["Diversity", fmt.dec(summary.diversity, 3), ""],
     ["Mutation", fmt.dec(summary.mutation_rate, 3), ""],
-    ["Deaths", deathText, ""],
+    ["Ends", endText, ""],
     ["Wall time", fmt.duration(summary.elapsed), ""],
   ];
   $("gen-summary").innerHTML = items
@@ -500,7 +501,7 @@ function showAgent(agent) {
       <dt>Mean score</dt><dd>${fmt.dec(agent.score, 3)}</dd>
       <dt>Best episode</dt><dd>${agent.best_episode_score}</dd>
       <dt>Mean steps</dt><dd>${fmt.dec(agent.steps, 1)}</dd>
-      <dt>Death</dt><dd>${escape(String(agent.death))}</dd>
+      <dt>Ended by</dt><dd>${escape(String(agent.end ?? agent.death))}</dd>
       <dt>Replay steps</dt><dd>${agent.episode ? agent.episode.steps : 0}${agent.replay && agent.replay.truncated ? " (truncated)" : ""}</dd>
     </dl>
     <p class="section-label">Fitness terms</p>
@@ -548,7 +549,7 @@ function renderExportReport(report) {
     ["Compute time", fmt.duration(t.compute_seconds)],
     ["Records set", fmt.int(t.records_set)],
     ["Final mean", fmt.dec(t.mean_score_final, 3)],
-    ["Final feeding", fmt.pct(t.scoring_fraction_final)],
+    ["Final scored", fmt.pct(t.scoring_fraction_final)],
     ["Achievements", `${report.achievements_unlocked} / ${report.achievements_total}`],
   ];
 
@@ -558,13 +559,15 @@ function renderExportReport(report) {
       </span>`)
     .join("");
 
-  const deaths = Object.entries(t.deaths || {})
+  const ends = Object.entries(t.ends || t.deaths || {})
     .sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `${k} ${fmt.int(v)}`)
     .join(" · ");
 
   let notice = "";
-  if (!report.genome_available) {
+  if (report.unsupported) {
+    notice = `<p class="hint" style="color:var(--warn)">Cannot export: ${escape(report.unsupported)}.</p>`;
+  } else if (!report.genome_available) {
     notice = `<p class="hint" style="color:var(--warn)">No champion genome is archived at or before generation ${report.requested_generation}.</p>`;
   } else if (!report.torch_available) {
     notice = `<p class="hint">Only the JSON model is written. <code>pip install torch</code> adds a .pt copy beside it.</p>`;
@@ -576,8 +579,8 @@ function renderExportReport(report) {
     </div>
     <p class="section-label">Achievements</p>
     <div class="achievements">${achievements}</div>
-    <p class="section-label">Deaths across the run</p>
-    <p class="hint">${escape(deaths || "–")}</p>
+    <p class="section-label">How episodes ended</p>
+    <p class="hint">${escape(ends || "–")}</p>
     <p class="section-label">Destination</p>
     <p class="hint"><code>${escape(report.destination)}</code></p>
     ${notice}

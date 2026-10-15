@@ -80,8 +80,8 @@ class ConsoleReporter:
     def _paint(self, text: str, code: str) -> str:
         return f"{code}{text}{_RESET}" if self.colour else text
 
-    def banner(self, *, run_id: str, generation: int, population: int, spec: str,
-               inputs: int, genome: int, url: str, workers: int = 1) -> None:
+    def banner(self, *, run_id: str, generation: int, population: int, game: str,
+               encoding: str, inputs: int, genome: int, url: str, workers: int = 1) -> None:
         line = self.rule * 62
         print(self._paint(line, _DIM))
         print(self._paint("  evolvarium  |  neuroevolution", _BOLD))
@@ -89,7 +89,8 @@ class ConsoleReporter:
         print(f"  run           {run_id}")
         print(f"  generation    {generation}")
         print(f"  population    {population}")
-        print(f"  encoding      {spec} ({inputs} inputs)")
+        print(f"  game          {game}")
+        print(f"  encoding      {encoding} ({inputs} inputs)")
         print(f"  genome        {genome} parameters")
         print(f"  workers       {workers}")
         print(f"  dashboard     {self._paint(url, _CYAN)}")
@@ -100,8 +101,8 @@ class ConsoleReporter:
         if report.generation % self.every and not report.record:
             return
 
-        deaths = report.deaths
-        top_death = max(deaths, key=deaths.get) if deaths else "-"
+        ends = report.ends
+        top_end = max(ends, key=ends.get) if ends else "-"
         marker = self._paint(" record", _GREEN) if report.record else ""
         stagnation = (
             self._paint(f"stag {report.stagnation:>3}", _YELLOW)
@@ -111,15 +112,15 @@ class ConsoleReporter:
 
         print(
             f"  gen {report.generation:>5}"
-            f"  best {report.max_episode_score:>3}"
+            f"  best {report.max_episode_score:>3g}"
             f"  mean {report.mean_score:>6.3f}"
-            f"  eat% {report.scoring_fraction * 100:>5.1f}"
+            f"  scored% {report.scoring_fraction * 100:>5.1f}"
             f"  fit {report.best_fitness:>9.1f}"
             f"  steps {report.mean_steps:>6.1f}"
             f"  div {report.diversity:>5.3f}"
             f"  mut {report.mutation_rate:>5.3f}"
             f"  {stagnation}"
-            f"  {top_death:<11}"
+            f"  {top_end:<11}"
             f"{marker}"
         )
 
@@ -149,7 +150,8 @@ class ConsoleReporter:
         self.farewell(generation=event.generation, episodes=event.episodes,
                       best=event.best_score, checkpoint=where)
 
-    def farewell(self, *, generation: int, episodes: int, best: int, checkpoint: str) -> None:
+    def farewell(self, *, generation: int, episodes: int, best: float | None,
+                 checkpoint: str) -> None:
         elapsed = time.time() - self.started
         hours, rest = divmod(int(elapsed), 3600)
         minutes, seconds = divmod(rest, 60)
@@ -158,7 +160,7 @@ class ConsoleReporter:
         print(self._paint(line, _DIM))
         print(f"  generations   {generation}")
         print(f"  episodes      {episodes:,}")
-        print(f"  best score    {best}")
+        print(f"  best score    {'-' if best is None else best}")
         print(f"  runtime       {hours:02d}:{minutes:02d}:{seconds:02d}")
         print(f"  checkpoint    {checkpoint}")
         print(self._paint(line, _DIM))

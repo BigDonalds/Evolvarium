@@ -15,9 +15,9 @@ import numpy as np
 import pytest
 
 from evolvarium.config import CONFIG
+from evolvarium.contract import Outcome
 from evolvarium.evolution.individual import Individual
 from evolvarium.evolution.population import Population
-from evolvarium.game.engine import DeathCause, EpisodeResult
 
 
 @pytest.fixture()
@@ -36,7 +36,7 @@ def test_reset_scores_clears_every_evaluation_field():
     individual.score = 7.0
     individual.best_episode_score = 7
     individual.steps = 300.0
-    individual.death = DeathCause.WALL
+    individual.end = "wall"
     individual.terms = {"food": 900.0}
     individual.evaluated = True
 
@@ -46,7 +46,7 @@ def test_reset_scores_clears_every_evaluation_field():
     assert individual.score == 0.0
     assert individual.best_episode_score == 0
     assert individual.steps == 0.0
-    assert individual.death is None
+    assert individual.end is None
     assert individual.terms == {}
     assert individual.evaluated is False
 
@@ -96,11 +96,9 @@ def test_fitness_is_the_mean_not_the_best(small_config, monkeypatch):
     scores = iter([0, 10])
 
     def fake_play(genome, seed, record):
-        result = EpisodeResult()
-        result.score = next(scores)
-        result.steps = 10
-        result.death = DeathCause.WALL
-        return result
+        score = next(scores)
+        return Outcome(score=score, steps=10, end="wall", fitness=float(score), terms={},
+                       signals={})
 
     monkeypatch.setattr(population._runner, "play", fake_play)
     population.evaluate_individual(individual, base_seed=0)
@@ -119,7 +117,7 @@ def test_generation_report_describes_the_generation_just_run(small_config):
     assert population.generation == 1
     assert report.mean_steps > 0
     assert 0.0 <= report.scoring_fraction <= 1.0
-    assert sum(report.deaths.values()) == small_config.evolution.population_size
+    assert sum(report.ends.values()) == small_config.evolution.population_size
 
 
 def test_population_size_is_stable(small_config):
@@ -177,7 +175,7 @@ def test_parallel_evaluation_is_identical_to_serial(small_config):
             assert a.mean_fitness == pytest.approx(b.mean_fitness)
             assert a.mean_score == pytest.approx(b.mean_score)
             assert a.max_episode_score == b.max_episode_score
-            assert a.deaths == b.deaths
+            assert a.ends == b.ends
             assert a.diversity == pytest.approx(b.diversity)
 
     # Breeding consumes the RNG identically too, so the populations stay in step.

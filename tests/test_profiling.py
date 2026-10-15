@@ -4,21 +4,20 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
+from test_golden import GOLDEN, golden_settings
 
 from evolvarium import profiling
 from evolvarium.cli import main
-from evolvarium.config import CONFIG, BoardConfig, EpisodeConfig, FeatureConfig, FitnessConfig
+from evolvarium.config import CONFIG
 from evolvarium.evolution.evaluation import EvalContext
+from evolvarium.games.snake.settings import BoardConfig, EpisodeConfig, SnakeSettings
 from evolvarium.nn.activations import resolve
 from evolvarium.nn.network import Architecture, PolicyNetwork
 from evolvarium.trainer import Trainer
 
-ROOT = Path(__file__).resolve().parents[1]
-GOLDEN = json.loads((ROOT / "tests" / "data" / "held_out_81.json").read_text(encoding="utf-8"))
 GENOME = np.array(GOLDEN["genome"], dtype=np.float32)
 ARCHITECTURE = Architecture.from_dict(GOLDEN["architecture"])
 
@@ -28,12 +27,9 @@ SEEDS = [900029, 900041]
 
 def golden_context(**changes) -> EvalContext:
     ctx = EvalContext(
-        spec_name=GOLDEN["features"]["spec"],
+        game="snake",
+        settings=golden_settings(),
         architecture=GOLDEN["architecture"],
-        board=BoardConfig(**GOLDEN["board"]),
-        episode=EpisodeConfig(**GOLDEN["episode"]),
-        fitness=FitnessConfig(),
-        features=FeatureConfig(**GOLDEN["features"]),
         exploration_rate=0.0,
         replay_steps=0,
     )
@@ -55,6 +51,11 @@ def test_every_move_is_counted_once_and_the_games_are_unchanged():
     recorded = {game["seed"]: game["steps"] + 1 for game in GOLDEN["games"]}
     assert moves.moves == sum(recorded[seed] for seed in SEEDS)
     assert sum(band.moves for band in moves.bands) == moves.moves
+    assert [band.low for band in moves.bands] == [
+        i * profiling.BAND_WIDTH for i in range(len(moves.bands))
+    ]
+    assert moves.workload == "snake length"
+    assert "snake length" in "\n".join(moves.lines())
     assert moves.inputs > 0 and moves.network > 0 and moves.game > 0
     assert moves.inputs + moves.network + moves.game <= moves.timed
     # The first move of the run and every 64th after it.
@@ -122,10 +123,11 @@ def test_worker_time_adds_up_to_the_round():
 
 
 def test_pool_round_on_a_small_board():
-    ctx = golden_context(
+    ctx = golden_context(settings=dataclasses.replace(
+        golden_settings(),
         board=BoardConfig(width=8, height=8),
         episode=dataclasses.replace(EpisodeConfig(**GOLDEN["episode"]), starvation_limit=40),
-    )
+    ))
     genomes = random_genomes(4, seed=3)
     pool = profiling.profile_pool(ctx, genomes, trials=1, workers=2, rounds=1)
 
@@ -144,8 +146,10 @@ def test_pool_round_on_a_small_board():
 
 def test_profile_command_on_a_saved_run(tmp_path, monkeypatch, capsys):
     config = CONFIG.with_overrides(
-        board=dataclasses.replace(CONFIG.board, width=8, height=8),
-        episode=dataclasses.replace(CONFIG.episode, starvation_limit=40, max_steps=400),
+        settings=SnakeSettings(
+            board=BoardConfig(width=8, height=8),
+            episode=EpisodeConfig(starvation_limit=40, max_steps=400),
+        ),
         evolution=dataclasses.replace(
             CONFIG.evolution, population_size=6, evaluation_episodes=1, elite_count=1,
             immigrant_count=1, workers=1,

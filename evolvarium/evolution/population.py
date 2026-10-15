@@ -8,9 +8,13 @@ Two invariants hold the whole thing together and both are enforced here:
    same clean slate as a newborn.
 
 2. A genome's score is the MEAN of its evaluation episodes, never the best.
-   Taking the best of several trials rewards a favourable food sequence rather
-   than a better policy, and the advantage compounds for whichever individuals
-   happen to be evaluated most often.
+   Taking the best of several trials rewards a favourable episode rather than a
+   better policy, and the advantage compounds for whichever individuals happen
+   to be evaluated most often.
+
+Fitness is always maximised. A game that wants its score low says so, and its
+goal turns the score round before it reaches selection. Scores themselves keep
+the game's direction, so "best" and "record" below follow it.
 """
 
 from __future__ import annotations
@@ -19,9 +23,8 @@ import time
 
 import numpy as np
 
+from .. import games
 from ..config import Config
-from ..features import FeatureSpec
-from ..game.engine import DeathCause
 from ..nn.network import Architecture, PolicyNetwork, random_genome
 from . import operators, selection, speciation
 from .evaluation import EvalContext, EvalResult, make_runner
@@ -34,7 +37,7 @@ class GenerationReport:
     __slots__ = (
         "generation", "population", "best", "best_fitness", "best_score",
         "mean_fitness", "mean_score", "max_episode_score", "scoring_fraction",
-        "mean_steps", "deaths", "diversity", "species_count", "mutation_rate",
+        "mean_steps", "ends", "diversity", "species_count", "mutation_rate",
         "stagnation", "elapsed", "episodes", "record", "evaluated",
     )
 
@@ -52,7 +55,7 @@ class GenerationReport:
             "mean_score": round(self.mean_score, 4),
             "scoring_fraction": round(self.scoring_fraction, 4),
             "mean_steps": round(self.mean_steps, 1),
-            "deaths": dict(self.deaths),
+            "ends": dict(self.ends),
             "diversity": round(self.diversity, 4),
             "species_count": self.species_count,
             "mutation_rate": round(self.mutation_rate, 4),
@@ -68,10 +71,14 @@ class Population:
     """Owns the genomes and drives one generation at a time."""
 
     def __init__(self, config: Config, seed: int | None = None):
+        config = games.resolve(config)
         self.config = config
         self.rng = np.random.default_rng(seed)
-        self.feature_spec = FeatureSpec(config.features.spec, config.features)
-        self.architecture = Architecture.from_config(config.network, self.feature_spec.size)
+        self.game = games.create(config.game, config.settings)
+        self.higher = self.game.direction == "higher"
+        self.architecture = Architecture.from_config(
+            config.network, self.game.observation.size, self.game.actions.size
+        )
         # One network instance is rebound per individual rather than allocating
         # a network per genome.
         self.network = PolicyNetwork(self.architecture)
@@ -79,12 +86,9 @@ class Population:
         # Scoring lives in `evaluation` so the serial and parallel paths run the
         # same code and cannot drift apart.
         self.context = EvalContext(
-            spec_name=self.feature_spec.name,
+            game=config.game,
+            settings=config.settings,
             architecture=self.architecture.to_dict(),
-            board=config.board,
-            episode=config.episode,
-            fitness=config.fitness,
-            features=config.features,
             exploration_rate=config.evolution.exploration_rate,
             replay_steps=config.history.replay_steps,
         )
@@ -92,7 +96,9 @@ class Population:
 
         self.generation = 0
         self.total_episodes = 0
-        self.best_ever_score = 0
+        # None until the first generation is scored: any first score is a
+        # record, whichever way the game counts.
+        self.best_ever_score: float | None = None
         self.best_ever_fitness = 0.0
         self.best_ever_genome: np.ndarray | None = None
         self.best_ever_generation = 0
@@ -126,9 +132,8 @@ class Population:
         individual.best_episode_score = outcome.best_episode_score
         individual.steps = outcome.steps
         individual.terms = outcome.terms
-        # Attributed to the worst episode, which is the informative failure.
-        individual.death = outcome.death
-        individual.death_cell = outcome.death_cell
+        individual.signals = outcome.signals
+        individual.end = outcome.end
         individual.replay = outcome.replay
         individual.evaluated = True
         self.total_episodes += outcome.episodes
@@ -172,7 +177,9 @@ class Population:
         ranked = sorted(self.members, key=lambda i: i.fitness, reverse=True)
         best = ranked[0]
 
-        record = best.best_episode_score > self.best_ever_score
+        record = self.best_ever_score is None or self.better(
+            best.best_episode_score, self.best_ever_score
+        )
         if record:
             self.best_ever_score = best.best_episode_score
             self.best_ever_fitness = best.fitness
@@ -182,10 +189,11 @@ class Population:
         else:
             self.stagnation += 1
 
-        deaths: dict[str, int] = {}
+        ends: dict[str, int] = {}
         for member in self.members:
-            key = member.death.value if member.death else "unknown"
-            deaths[key] = deaths.get(key, 0) + 1
+            key = member.end or "unknown"
+            ends[key] = ends.get(key, 0) + 1
+        episode_scores = [m.best_episode_score for m in self.members]
 
         mutation_rate = self._current_mutation_rate()
         report = GenerationReport(
@@ -196,12 +204,13 @@ class Population:
             best=best,
             best_fitness=best.fitness,
             best_score=best.score,
-            max_episode_score=max(m.best_episode_score for m in self.members),
+            # The best single episode, which is the lowest when lower is better.
+            max_episode_score=max(episode_scores) if self.higher else min(episode_scores),
             mean_fitness=float(np.mean([m.fitness for m in self.members])),
             mean_score=float(np.mean([m.score for m in self.members])),
             scoring_fraction=float(np.mean([m.best_episode_score > 0 for m in self.members])),
             mean_steps=float(np.mean([m.steps for m in self.members])),
-            deaths=deaths,
+            ends=ends,
             diversity=self._diversity(),
             species_count=len(self.species),
             mutation_rate=mutation_rate,
@@ -214,6 +223,10 @@ class Population:
         self.members = self._breed(ranked, mutation_rate)
         self.generation += 1
         return report
+
+    def better(self, score: float, than: float) -> bool:
+        """Whether `score` beats `than` in the game's direction."""
+        return score > than if self.higher else score < than
 
     # ------------------------------------------------------------------ reproduction
 
@@ -310,4 +323,4 @@ class Population:
         return individual, outcome
 
 
-__all__ = ["Population", "GenerationReport", "DeathCause"]
+__all__ = ["Population", "GenerationReport"]

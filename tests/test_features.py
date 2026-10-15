@@ -12,21 +12,23 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from evolvarium.config import CONFIG
-from evolvarium.features import EGOCENTRIC_V1_NAMES, FeatureSpec, available_specs
-from evolvarium.game.board import Direction, Turn
-from evolvarium.game.engine import Episode
-from evolvarium.game.snake import Snake
-from evolvarium.space import SpaceScanner
+from evolvarium.games.snake.board import Direction, Turn
+from evolvarium.games.snake.engine import Episode
+from evolvarium.games.snake.features import EGOCENTRIC_V1_NAMES, FeatureSpec, available_specs
+from evolvarium.games.snake.settings import SnakeSettings
+from evolvarium.games.snake.snake import Snake
+from evolvarium.games.snake.space import SpaceScanner
+
+SNAKE = SnakeSettings()
 
 
 @pytest.fixture()
 def spec() -> FeatureSpec:
-    return FeatureSpec(CONFIG.features.spec, CONFIG.features)
+    return FeatureSpec(SNAKE.features.spec, SNAKE.features)
 
 
 def make_episode(seed: int = 3) -> Episode:
-    return Episode(CONFIG.board, CONFIG.episode, seed)
+    return Episode(SNAKE.board, SNAKE.episode, seed)
 
 
 def test_spec_width_matches_declared_size(spec):
@@ -112,7 +114,7 @@ def test_reachable_space_shares_one_component():
 
 def test_unknown_spec_is_rejected():
     with pytest.raises(ValueError, match="unknown feature spec"):
-        FeatureSpec("does_not_exist", CONFIG.features)
+        FeatureSpec("does_not_exist", SNAKE.features)
 
 
 def test_v2_space_is_free_running_not_truncated():
@@ -123,11 +125,11 @@ def test_v2_space_is_free_running_not_truncated():
     resulting difference says nothing about the game, and with the default cap
     it shows up on roughly half of all steps.
     """
-    from evolvarium.game.board import Direction
-    from evolvarium.game.engine import Episode
+    from evolvarium.games.snake.board import Direction
+    from evolvarium.games.snake.engine import Episode
 
-    spec = FeatureSpec("egocentric_v2", CONFIG.features)
-    episode = Episode(CONFIG.board, CONFIG.episode, seed=5)
+    spec = FeatureSpec("egocentric_v2", SNAKE.features)
+    episode = Episode(SNAKE.board, SNAKE.episode, seed=5)
     episode.snake = Snake((7, 7), Direction.UP, 3)
 
     space = spec(episode)[3:6]
@@ -147,10 +149,10 @@ def test_v2_reports_a_smaller_region_as_smaller():
 
 def test_v1_and_v2_agree_on_danger_columns():
     """Only the space columns differ between the two encodings."""
-    from evolvarium.game.board import Turn
+    from evolvarium.games.snake.board import Turn
 
-    v1 = FeatureSpec("egocentric_v1", CONFIG.features)
-    v2 = FeatureSpec("egocentric_v2", CONFIG.features)
+    v1 = FeatureSpec("egocentric_v1", SNAKE.features)
+    v2 = FeatureSpec("egocentric_v2", SNAKE.features)
     episode = make_episode(11)
     for _ in range(60):
         if episode.finished:
@@ -203,10 +205,10 @@ def test_space_horizon_bounds_the_search():
 
 
 def test_v3_matches_v2_outside_the_space_columns():
-    from evolvarium.game.board import Turn
+    from evolvarium.games.snake.board import Turn
 
-    v2 = FeatureSpec("egocentric_v2", CONFIG.features)
-    v3 = FeatureSpec("egocentric_v3", CONFIG.features)
+    v2 = FeatureSpec("egocentric_v2", SNAKE.features)
+    v3 = FeatureSpec("egocentric_v3", SNAKE.features)
     episode = make_episode(13)
     for _ in range(80):
         if episode.finished:
@@ -219,10 +221,10 @@ def test_v3_matches_v2_outside_the_space_columns():
 
 def test_v4_appends_to_v3_without_disturbing_it():
     """The first eleven columns must mean the same thing in both specs."""
-    from evolvarium.game.board import Turn
+    from evolvarium.games.snake.board import Turn
 
-    v3 = FeatureSpec("egocentric_v3", CONFIG.features)
-    v4 = FeatureSpec("egocentric_v4", CONFIG.features)
+    v3 = FeatureSpec("egocentric_v3", SNAKE.features)
+    v4 = FeatureSpec("egocentric_v4", SNAKE.features)
     assert v4.size == v3.size + 3
 
     episode = make_episode(17)
@@ -240,9 +242,9 @@ def test_v4_fit_scaling_puts_break_even_at_one_body_length(monkeypatch):
     whose reachable count lands on an exact multiple of the body is fiddly and
     would test the geometry rather than the contract.
     """
-    from evolvarium import features
+    from evolvarium.games.snake import features
 
-    episode = Episode(CONFIG.board, CONFIG.episode, seed=5)
+    episode = Episode(SNAKE.board, SNAKE.episode, seed=5)
     episode.snake = Snake((7, 7), Direction.UP, 6)
     episode.food = (0, 0)
     length = len(episode.snake)
@@ -257,7 +259,7 @@ def test_v4_fit_scaling_puts_break_even_at_one_body_length(monkeypatch):
     monkeypatch.setattr(
         features, "scanner_for", lambda w, h: Stub((length // 2, length, length * 3))
     )
-    fit = FeatureSpec("egocentric_v4", CONFIG.features)(episode)[11:14]
+    fit = FeatureSpec("egocentric_v4", SNAKE.features)(episode)[11:14]
 
     assert fit[0] == pytest.approx(0.25)   # half a body of room
     assert fit[1] == pytest.approx(0.5)    # exactly break-even
@@ -266,11 +268,11 @@ def test_v4_fit_scaling_puts_break_even_at_one_body_length(monkeypatch):
 
 def test_v4_fit_inputs_saturate_when_the_board_is_roomy():
     """Above two body lengths the input holds at its ceiling, by design."""
-    from evolvarium.game.board import Direction
-    from evolvarium.game.engine import Episode
+    from evolvarium.games.snake.board import Direction
+    from evolvarium.games.snake.engine import Episode
 
-    spec = FeatureSpec("egocentric_v4", CONFIG.features)
-    episode = Episode(CONFIG.board, CONFIG.episode, seed=3)
+    spec = FeatureSpec("egocentric_v4", SNAKE.features)
+    episode = Episode(SNAKE.board, SNAKE.episode, seed=3)
     episode.snake = Snake((7, 7), Direction.UP, 3)
     episode.food = (0, 0)
 
@@ -282,20 +284,20 @@ def test_v4_fit_inputs_saturate_when_the_board_is_roomy():
 
 def test_v4_fit_inputs_fall_as_the_snake_fills_its_region():
     """The survival margin must drop as the body grows into the space it has."""
-    from evolvarium.game.board import Direction
-    from evolvarium.game.engine import Episode
+    from evolvarium.games.snake.board import Direction
+    from evolvarium.games.snake.engine import Episode
 
-    spec = FeatureSpec("egocentric_v4", CONFIG.features)
+    spec = FeatureSpec("egocentric_v4", SNAKE.features)
     readings = []
     for length in (4, 20, 60):
-        episode = Episode(CONFIG.board, CONFIG.episode, seed=3)
+        episode = Episode(SNAKE.board, SNAKE.episode, seed=3)
         # A straight body laid along the rows, so the free region stays connected.
         cells = []
         x = y = 0
         for _ in range(length):
             cells.append((x, y))
             x += 1
-            if x >= CONFIG.board.width:
+            if x >= SNAKE.board.width:
                 x = 0
                 y += 1
         episode.snake = Snake(cells[0], Direction.DOWN, 1)
@@ -303,7 +305,7 @@ def test_v4_fit_inputs_fall_as_the_snake_fills_its_region():
         episode.snake._body.extend(cells)
         episode.snake._occupied = set(cells)
         episode.snake.heading = Direction.DOWN
-        episode.food = (CONFIG.board.width - 1, CONFIG.board.height - 1)
+        episode.food = (SNAKE.board.width - 1, SNAKE.board.height - 1)
         readings.append(float(spec(episode)[11:14].max()))
 
     assert readings[0] >= readings[1] >= readings[2], readings
@@ -312,7 +314,7 @@ def test_v4_fit_inputs_fall_as_the_snake_fills_its_region():
 
 # ------------------------------------------------------------------ egocentric_v5
 
-V5 = FeatureSpec("egocentric_v5", CONFIG.features)
+V5 = FeatureSpec("egocentric_v5", SNAKE.features)
 V5_RAY_NAMES = (
     "forward", "forward_left", "left", "back_left", "back_right", "right", "forward_right",
 )
@@ -342,7 +344,7 @@ def v5_rays(episode):
 
 def test_v5_appends_to_v3_without_disturbing_it():
     """The first eleven columns must be v3's, bit for bit."""
-    v3 = FeatureSpec("egocentric_v3", CONFIG.features)
+    v3 = FeatureSpec("egocentric_v3", SNAKE.features)
     assert V5.size == v3.size + 14
     assert V5.names[:11] == v3.names
 
@@ -360,7 +362,7 @@ def test_v5_appends_to_v3_without_disturbing_it():
 ])
 def test_v5_wall_closeness_matches_the_board(heading, cells):
     """Each ray's distance to the edge, worked out by hand for a head at (3, 10)."""
-    episode = Episode(CONFIG.board, CONFIG.episode, seed=1)
+    episode = Episode(SNAKE.board, SNAKE.episode, seed=1)
     back = heading.opposite().delta
     place_snake(episode, [(3 + back[0] * i, 10 + back[1] * i) for i in range(3)], heading)
     episode.food = (13, 0)
@@ -379,7 +381,7 @@ def test_v5_wall_closeness_matches_the_board(heading, cells):
     (11, True),    # both are still occupied when it arrives
 ])
 def test_v5_rays_look_past_segments_that_will_have_moved(length, still_there):
-    episode = Episode(CONFIG.board, CONFIG.episode, seed=1)
+    episode = Episode(SNAKE.board, SNAKE.episode, seed=1)
     place_snake(episode, COIL[:length], Direction.UP)
     episode.food = (0, 13)
 
@@ -394,18 +396,18 @@ def test_v5_rays_look_past_segments_that_will_have_moved(length, still_there):
 
 def test_v5_rays_are_the_same_in_every_orientation():
     """Turning the whole board a quarter turn must not change what the snake sees."""
-    n = CONFIG.board.width
-    assert CONFIG.board.height == n
+    n = SNAKE.board.width
+    assert SNAKE.board.height == n
 
     def turn(cell):
         x, y = cell
         return (n - 1 - y, x)
 
-    original = Episode(CONFIG.board, CONFIG.episode, seed=1)
+    original = Episode(SNAKE.board, SNAKE.episode, seed=1)
     place_snake(original, COIL, Direction.UP)
     original.food = (0, 13)
 
-    rotated = Episode(CONFIG.board, CONFIG.episode, seed=1)
+    rotated = Episode(SNAKE.board, SNAKE.episode, seed=1)
     place_snake(rotated, [turn(c) for c in COIL], Direction.RIGHT)
     rotated.food = turn((0, 13))
 

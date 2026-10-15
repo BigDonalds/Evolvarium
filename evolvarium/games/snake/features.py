@@ -32,8 +32,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from .config import FeatureConfig
-from .game.engine import Episode
+from .engine import Episode
+from .settings import FeatureConfig
 from .space import scanner_for
 
 

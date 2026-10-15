@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..config import BoardConfig, FitnessConfig
-from ..game.engine import DeathCause, EpisodeResult
+from .engine import DeathCause, EpisodeResult
+from .settings import BoardConfig, FitnessConfig
 
 
 def evaluate(

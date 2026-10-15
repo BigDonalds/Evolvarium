@@ -1,7 +1,6 @@
-"""Genetic algorithm: individuals, operators, selection, fitness, population."""
+"""Genetic algorithm: individuals, operators, selection, population."""
 
-from .fitness import evaluate
 from .individual import Individual
 from .population import GenerationReport, Population
 
-__all__ = ["evaluate", "Individual", "Population", "GenerationReport"]
+__all__ = ["Individual", "Population", "GenerationReport"]

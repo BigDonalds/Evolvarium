@@ -17,6 +17,7 @@ import pytest
 from evolvarium.config import CONFIG
 from evolvarium.evolution.individual import Individual, id_number
 from evolvarium.evolution.population import Population
+from evolvarium.games.snake.settings import BoardConfig, EpisodeConfig, SnakeSettings
 from evolvarium.persistence import checkpoint
 from evolvarium.trainer import Trainer
 
@@ -28,8 +29,10 @@ def make_config(tmp_path, speciation: bool = False):
     # A small board and a short starvation limit keep the games cheap. Nothing
     # in saving or loading depends on either.
     return CONFIG.with_overrides(
-        board=dataclasses.replace(CONFIG.board, width=8, height=8),
-        episode=dataclasses.replace(CONFIG.episode, starvation_limit=40, max_steps=400),
+        settings=SnakeSettings(
+            board=BoardConfig(width=8, height=8),
+            episode=EpisodeConfig(starvation_limit=40, max_steps=400),
+        ),
         evolution=dataclasses.replace(
             CONFIG.evolution, population_size=12, evaluation_episodes=2, elite_count=2,
             immigrant_count=1, workers=1, use_speciation=speciation, target_species=3,
@@ -43,7 +46,7 @@ def make_config(tmp_path, speciation: bool = False):
 def report_record(report) -> tuple:
     return (
         report.generation, report.best_fitness, report.best_score, report.mean_fitness,
-        report.mean_score, report.max_episode_score, tuple(sorted(report.deaths.items())),
+        report.mean_score, report.max_episode_score, tuple(sorted(report.ends.items())),
         report.diversity, report.species_count, report.mutation_rate, report.stagnation,
         report.episodes, report.record,
         tuple(m.fitness for m in report.evaluated),

@@ -9,8 +9,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from evolvarium import games
 from evolvarium.config import CONFIG
 from evolvarium.evolution.population import Population
+from evolvarium.games.snake.game import milestones
+from evolvarium.games.snake.settings import SnakeSettings
 from evolvarium.persistence import checkpoint, export_model, model_file
 from evolvarium.telemetry.history import HistoryStore, lineage_summaries
 from evolvarium.web.control import TrainingGate
@@ -37,7 +40,8 @@ def test_checkpoint_round_trip(small_config, tmp_path):
 
     assert path.exists()
     assert info.generation == population.generation
-    assert info.feature_spec == population.feature_spec.name
+    assert info.game == "snake"
+    assert info.encoding == population.game.model_inputs()["encoding"]
 
     restored = checkpoint.load(path, small_config, seed=3)
     assert restored.generation == population.generation
@@ -47,23 +51,56 @@ def test_checkpoint_round_trip(small_config, tmp_path):
         assert np.array_equal(original.genome, copy.genome)
 
 
-def test_checkpoint_refuses_a_feature_spec_mismatch(small_config, tmp_path):
+def rewrite_meta(path: Path, change) -> None:
+    with np.load(path, allow_pickle=False) as archive:
+        arrays = {k: archive[k] for k in archive.files}
+    meta = json.loads(bytes(arrays["meta"]).decode("utf-8"))
+    change(meta)
+    arrays["meta"] = np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8)
+    np.savez_compressed(path, **arrays)
+
+
+@pytest.mark.parametrize(("key", "value", "message"), [
+    ("game", "tetris", "trained on 'tetris'"),
+    ("encoding", "something_else", "'something_else' inputs"),
+    ("inputs", ["x", "y"], "trained on inputs"),
+])
+def test_checkpoint_refuses_a_different_game_or_inputs(small_config, tmp_path, key, value,
+                                                        message):
     population = Population(small_config, seed=4)
     path = tmp_path / "cp.npz"
     checkpoint.save(population, path)
 
-    # Rewriting the recorded spec simulates loading under a different encoding.
-    with np.load(path, allow_pickle=False) as archive:
-        arrays = {k: archive[k] for k in archive.files}
-    import json
+    rewrite_meta(path, lambda meta: meta.update({key: value}))
 
-    meta = json.loads(bytes(arrays["meta"]).decode("utf-8"))
-    meta["feature_spec"] = "something_else"
-    arrays["meta"] = np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8)
-    np.savez_compressed(path, **arrays)
-
-    with pytest.raises(checkpoint.CheckpointMismatch, match="feature spec"):
+    with pytest.raises(checkpoint.CheckpointMismatch, match=message):
         checkpoint.load(path, small_config)
+
+
+def test_a_checkpoint_from_before_games_still_loads(small_config, tmp_path):
+    """Older checkpoints name a feature spec and fitness weights, and no game."""
+    population = Population(small_config, seed=4)
+    population.run_generation()
+    path = tmp_path / "cp.npz"
+    checkpoint.save(population, path)
+
+    def as_legacy(meta):
+        spec = meta.pop("encoding")
+        for key in ("game", "inputs", "settings"):
+            meta.pop(key)
+        meta["feature_spec"] = spec
+        meta["fitness"] = {"death_fraction": 0.5}
+
+    rewrite_meta(path, as_legacy)
+    meta = checkpoint.read_meta(path)
+
+    assert checkpoint.saved_game(meta) == ("snake", SnakeSettings().features.spec)
+    assert checkpoint.saved_settings(meta) == {
+        "fitness": {"death_fraction": 0.5},
+        "features": {"spec": SnakeSettings().features.spec},
+    }
+    restored = checkpoint.load(path, small_config)
+    assert restored.generation == population.generation
 
 
 def test_checkpoint_contains_no_torch_types(small_config, tmp_path):
@@ -136,7 +173,7 @@ def test_lineage_follows_resumed_runs(tmp_path):
 
 SUMMARIES = [{"generation": 0, "max_episode_score": 3, "scoring_fraction": 0.6,
               "mean_score": 0.4, "mean_steps": 120, "episodes": 8, "elapsed": 1.0,
-              "best_fitness": 500.0, "deaths": {"wall": 8}, "record": True}]
+              "best_fitness": 500.0, "ends": {"wall": 8}, "record": True}]
 
 
 def export_report(config, population, destination, genome):
@@ -144,11 +181,8 @@ def export_report(config, population, destination, genome):
         generation=0,
         genome=genome,
         summaries=SUMMARIES,
-        board=config.board,
-        episode=config.episode,
-        features=config.features,
+        game=games.create(config.game, config.settings),
         architecture=population.architecture,
-        feature_spec=population.feature_spec,
         run_id="run-test",
         destination=destination,
     )
@@ -163,7 +197,9 @@ def test_export_report_writes_nothing(small_config, tmp_path):
 
     assert not destination.exists()
     assert report["parameter_count"] == population.architecture.genome_size
-    assert report["feature_spec"]["size"] == population.feature_spec.size
+    assert report["unsupported"] is None
+    assert report["inputs"]["size"] == population.game.observation.size
+    assert report["actions"] == ["left", "straight", "right"]
     unlocked = [a for a in report["achievements"] if a["unlocked"]]
     assert any(a["key"] == "score_1" for a in unlocked)
     assert report["training"]["best_score"] == 3
@@ -188,8 +224,9 @@ def test_export_needs_no_torch(small_config, tmp_path, monkeypatch):
     restored, architecture = model_file.to_genome(document)
     assert np.array_equal(restored, genome)
     assert architecture == population.architecture
-    assert document["inputs"]["encoding"] == small_config.features.spec
-    assert document["game"]["board"]["width"] == small_config.board.width
+    assert document["inputs"]["encoding"] == SnakeSettings().features.spec
+    assert document["game"]["name"] == "snake"
+    assert document["game"]["board"]["width"] == SnakeSettings().board.width
     assert document["report"]["training"]["best_score"] == 3
 
 
@@ -218,15 +255,23 @@ def test_export_writes_a_matching_pt_copy(small_config, tmp_path):
 def test_achievements_only_count_generations_up_to_the_target():
     summaries = [
         {"generation": 0, "max_episode_score": 1, "scoring_fraction": 0.1, "mean_score": 0.1,
-         "mean_steps": 10, "episodes": 1, "elapsed": 0.1, "best_fitness": 1.0, "deaths": {}},
+         "mean_steps": 10, "episodes": 1, "elapsed": 0.1, "best_fitness": 1.0, "ends": {}},
         {"generation": 9, "max_episode_score": 12, "scoring_fraction": 0.95, "mean_score": 1.4,
-         "mean_steps": 210, "episodes": 1, "elapsed": 0.1, "best_fitness": 9.0, "deaths": {}},
+         "mean_steps": 210, "episodes": 1, "elapsed": 0.1, "best_fitness": 9.0, "ends": {}},
     ]
-    early = export_model.compute_achievements([s for s in summaries if s["generation"] <= 0])
-    late = export_model.compute_achievements(summaries)
+    early = milestones([s for s in summaries if s["generation"] <= 0])
+    late = milestones(summaries)
 
-    assert not any(a.unlocked for a in early if a.key == "score_10")
-    assert any(a.unlocked for a in late if a.key == "score_10")
+    assert not any(a.reached for a in early if a.key == "score_10")
+    assert any(a.reached for a in late if a.key == "score_10")
+
+
+def test_milestones_read_summaries_that_called_endings_deaths():
+    summaries = [{"generation": 4, "deaths": {"wall": 0, "self": 8}},
+                 {"generation": 5, "ends": {"wall": 0, "self": 8}}]
+
+    wall_wise = {m.key: m for m in milestones(summaries)}["wall_wise"]
+    assert wall_wise.generation == 4
 
 
 def test_gate_holds_only_while_a_viewer_is_present():
@@ -314,18 +359,21 @@ def test_every_run_writes_a_manifest_with_its_seed(small_config):
     assert manifest["run_id"] == "run-manifest-test"
     evolution = manifest["config"]["evolution"]
     assert evolution["population_size"] == small_config.evolution.population_size
-    assert manifest["config"]["features"]["spec"] == small_config.features.spec
+    assert manifest["config"]["game"] == "snake"
+    settings = manifest["config"]["settings"]
+    assert settings["features"]["spec"] == SnakeSettings().features.spec
+    assert set(settings) == {"board", "episode", "features", "fitness"}
 
 
 def test_default_replays_record_the_whole_game():
     """A replay shorter than the game shows its end game as a death that never happened."""
     steps = CONFIG.history.replay_steps
-    assert steps == 0 or steps >= CONFIG.episode.max_steps
+    assert steps == 0 or steps >= SnakeSettings().episode.max_steps
 
 
 def test_replay_marks_itself_truncated_only_when_cut():
-    from evolvarium.game.engine import EpisodeResult, Frame
-    from evolvarium.telemetry.history import pack_replay
+    from evolvarium.games.snake.engine import EpisodeResult, Frame
+    from evolvarium.games.snake.replay import pack_replay
 
     result = EpisodeResult()
     result.frames = [Frame(head=(i % 14, i // 14), food=(0, 0), length=3, score=0)

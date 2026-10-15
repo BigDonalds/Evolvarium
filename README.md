@@ -19,7 +19,7 @@ project stopped. Only the name differs: the package `snake_ai` is now
 format string follow it. The first commit is the baseline the project is
 measured against, and everything after it is new work.
 
-At the baseline the engine trains Snake and nothing else. Its best model, in
+At the baseline the engine trained Snake and nothing else. Its best model, in
 `models/`, averages 81.5 over 60 held-out games.
 
 ## Running
@@ -34,7 +34,7 @@ python -m pytest
 ```
 
 `python -m pytest -m slow` replays all 60 held-out games of the model in
-`models/` and checks each game's score, length and cause of death against the
+`models/` and checks each game's score, length and how it ended against the
 record in `tests/data`. It takes under a minute. CI runs both on Linux, Windows,
 Windows on ARM and macOS.
 
@@ -51,6 +51,20 @@ curl -N http://127.0.0.1:8765/api/events
 the baseline is Snake-AI's
 [COMMANDS.md](https://github.com/BigDonalds/Snake-AI/blob/v0.2.0/COMMANDS.md),
 reading `snake_ai` there as `evolvarium`.
+
+## Games
+
+The engine trains any game written to the contract in `evolvarium/contract.py`.
+A game declares the inputs each agent sees, as numbers or categories, and the
+actions it can take, as named options or numbers within a range. It resets from
+a seed, takes an action for every agent each step, and says how each episode
+ended and whether a higher or a lower score is better. The engine sizes the
+network from that and turns its outputs back into the game's own actions.
+
+Snake, in `evolvarium/games/snake`, is the one built in. Any other game is named
+`module:Class` in the configuration's `game` and imported from wherever Python
+finds it. `tests/test_contract.py` trains one with two agents and a score that
+is better lower. The command line still trains Snake only.
 
 ## Exported models
 

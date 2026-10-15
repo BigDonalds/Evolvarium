@@ -8,17 +8,17 @@ that quietly changes selection is worse than no speedup.
 Three rules keep them identical:
 
 * Seeds are decided by the parent before any work is dispatched, and passed in.
-  If a worker chose its own, genomes would be scored on different food sequences
-  and selection would reward luck instead of policy.
+  If a worker chose its own, genomes would be scored on different episodes and
+  selection would reward luck instead of policy.
 * No worker touches the population RNG. Exploration, when enabled, draws from a
   generator seeded off the episode seed, so it is a function of the task rather
   than of the order tasks happen to run in.
 * Workers return data, never objects the parent mutates. The parent applies
   results in the original order after every task completes.
 
-Replays are packed inside the worker. A recorded episode holds thousands of frame
-objects; packed it is a few kilobytes, and that difference is the difference
-between a speedup and a serialisation bottleneck.
+Replays are packed inside the worker by the game itself. A recorded episode can
+hold thousands of frame objects; packed it is a few kilobytes, and that
+difference is the difference between a speedup and a serialisation bottleneck.
 """
 
 from __future__ import annotations
@@ -29,24 +29,22 @@ from typing import Any
 
 import numpy as np
 
-from ..config import BoardConfig, EpisodeConfig, FeatureConfig, FitnessConfig
-from ..features import FeatureSpec
-from ..game.board import Turn
-from ..game.engine import DeathCause, Episode
+from .. import games
+from ..contract import Outcome
 from ..nn.network import Architecture, PolicyNetwork
-from .fitness import evaluate
 
 
 @dataclass(frozen=True)
 class EvalContext:
-    """Everything a worker needs to score a genome. Picklable by construction."""
+    """Everything a worker needs to score a genome. Picklable by construction.
 
-    spec_name: str
+    `game` is a name the registry resolves, never a game object, so a worker
+    builds its own copy and nothing about a live episode crosses processes.
+    """
+
+    game: str
+    settings: Any
     architecture: dict
-    board: BoardConfig
-    episode: EpisodeConfig
-    fitness: FitnessConfig
-    features: FeatureConfig
     exploration_rate: float
     replay_steps: int
 
@@ -57,73 +55,94 @@ class EvalResult:
 
     fitness: float
     score: float
-    best_episode_score: int
+    best_episode_score: float
     steps: float
     terms: dict[str, float]
-    death: DeathCause
-    death_cell: tuple[int, int]
+    signals: dict[str, float]
+    # How the worst episode ended, which is the informative failure.
+    end: str
     episodes: int
     replay: dict | None = None
 
 
 class _Runner:
-    """Holds the spec and network so they are built once, not once per genome."""
+    """Holds the game and network so they are built once, not once per genome."""
 
     def __init__(self, ctx: EvalContext):
         self.ctx = ctx
-        self.spec = FeatureSpec(ctx.spec_name, ctx.features)
+        self.game = games.create(ctx.game, ctx.settings)
         self.network = PolicyNetwork(Architecture.from_dict(ctx.architecture))
+        self.higher = self.game.direction == "higher"
 
-    def play(self, genome: np.ndarray, seed: int, record: bool) -> Any:
-        ctx = self.ctx
-        episode = Episode(ctx.board, ctx.episode, seed, record=record)
-        network = self.network.load(genome)
-        rate = ctx.exploration_rate
+    def play(self, genome: np.ndarray, seed: int, record: bool) -> Outcome:
+        game = self.game
+        game.reset(seed, record=record)
+        forward = self.network.load(genome).forward
+        rate = self.ctx.exploration_rate
         # Seeded from the episode, so exploration is reproducible and identical
         # whether this runs here or in a worker process.
         rng = np.random.default_rng(seed ^ 0x5EED) if rate > 0.0 else None
 
-        while not episode.finished:
-            if rng is not None and rng.random() < rate:
-                action = int(rng.integers(3))
-            else:
-                action = network.act(self.spec(episode))
-            episode.step(Turn(action))
-        return episode.result
+        agents = game.agents
+        observe = game.observe
+        encode = game.observation.encode
+        decode = game.actions.decode
+        explore = game.actions.explore
+        step = game.step
+
+        while not game.over:
+            actions = {}
+            for agent in agents:
+                if rng is not None and rng.random() < rate:
+                    actions[agent] = explore(rng)
+                else:
+                    actions[agent] = decode(forward(encode(observe(agent))))
+            step(actions)
+
+        fitness, terms = game.goal()
+        return Outcome(
+            score=game.score,
+            steps=game.steps,
+            end=game.end,
+            fitness=fitness,
+            terms=terms,
+            signals=game.signals(),
+            replay=game.replay(self.ctx.replay_steps) if record else None,
+        )
 
     def score(self, genome: np.ndarray, base_seed: int, trials: int, record: bool) -> EvalResult:
-        ctx = self.ctx
-        results = []
-        fitnesses = []
-        totals: dict[str, float] = {}
-
-        for trial in range(trials):
+        outcomes = [
             # Every genome in a generation meets the same seed sequence, so
-            # differences between them reflect policy rather than food luck.
-            result = self.play(genome, base_seed + trial, record and trial == 0)
-            fitness, terms = evaluate(result, ctx.fitness, ctx.board)
-            results.append(result)
-            fitnesses.append(fitness)
-            for key, value in terms.items():
-                totals[key] = totals.get(key, 0.0) + value
+            # differences between them reflect policy rather than luck.
+            self.play(genome, base_seed + trial, record and trial == 0)
+            for trial in range(trials)
+        ]
+        terms: dict[str, float] = {}
+        signals: dict[str, float] = {}
+        for outcome in outcomes:
+            for key, value in outcome.terms.items():
+                terms[key] = terms.get(key, 0.0) + value
+            for key, value in outcome.signals.items():
+                signals[key] = signals.get(key, 0.0) + value
 
-        worst = min(results, key=lambda r: r.score)
-        replay = None
-        if record:
-            from ..telemetry.history import pack_replay
-
-            replay = pack_replay(results[0], ctx.replay_steps)
+        scores = [o.score for o in outcomes]
+        if self.higher:
+            best = max(scores)
+            worst = min(outcomes, key=lambda o: o.score)
+        else:
+            best = min(scores)
+            worst = max(outcomes, key=lambda o: o.score)
 
         return EvalResult(
-            fitness=float(np.mean(fitnesses)),
-            score=float(np.mean([r.score for r in results])),
-            best_episode_score=max(r.score for r in results),
-            steps=float(np.mean([r.steps for r in results])),
-            terms={k: v / trials for k, v in totals.items()},
-            death=worst.death,
-            death_cell=worst.death_cell,
+            fitness=float(np.mean([o.fitness for o in outcomes])),
+            score=float(np.mean(scores)),
+            best_episode_score=best,
+            steps=float(np.mean([o.steps for o in outcomes])),
+            terms={k: v / trials for k, v in terms.items()},
+            signals={k: v / trials for k, v in signals.items()},
+            end=worst.end,
             episodes=trials,
-            replay=replay,
+            replay=outcomes[0].replay,
         )
 
 
@@ -133,7 +152,7 @@ _runner: _Runner | None = None
 
 
 def init_worker(ctx: EvalContext) -> None:
-    """Process initialiser: build the spec and network once per worker.
+    """Process initialiser: build the game and network once per worker.
 
     Workers ignore Ctrl+C. The console delivers it to every process attached to
     it, and a worker that died on it would take the generation in progress with

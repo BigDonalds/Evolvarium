@@ -2,7 +2,7 @@
 
 tests/data/held_out_81.json holds the model's genome, the rules it was trained
 under and every held-out game it played at the baseline: score, length in moves
-and cause of death. A change anywhere in the game, the encoding, the network or
+and how it ended. A change anywhere in the game, the encoding, the network or
 the food sequence that alters even one move sends the game down a different
 path, and over thousands of moves that path ends somewhere else.
 
@@ -19,8 +19,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from evolvarium.config import BoardConfig, EpisodeConfig, FeatureConfig, FitnessConfig
 from evolvarium.evolution.evaluation import EvalContext, make_runner
+from evolvarium.games.snake.settings import (
+    BoardConfig,
+    EpisodeConfig,
+    FeatureConfig,
+    SnakeSettings,
+)
 from evolvarium.persistence import model_file
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,15 +35,21 @@ GOLDEN = json.loads((ROOT / "tests" / "data" / "held_out_81.json").read_text(enc
 QUICK_SEEDS = (900029, 900041, 900010, 900003, 900022, 900038)
 
 
+def golden_settings() -> SnakeSettings:
+    """The rules the model was trained under. Playing never reads fitness."""
+    return SnakeSettings(
+        board=BoardConfig(**GOLDEN["board"]),
+        episode=EpisodeConfig(**GOLDEN["episode"]),
+        features=FeatureConfig(**GOLDEN["features"]),
+    )
+
+
 def replay(seeds) -> list[dict]:
     """Play the stored genome once per seed under the stored rules, exploration off."""
     ctx = EvalContext(
-        spec_name=GOLDEN["features"]["spec"],
+        game="snake",
+        settings=golden_settings(),
         architecture=GOLDEN["architecture"],
-        board=BoardConfig(**GOLDEN["board"]),
-        episode=EpisodeConfig(**GOLDEN["episode"]),
-        fitness=FitnessConfig(),
-        features=FeatureConfig(**GOLDEN["features"]),
         exploration_rate=0.0,
         replay_steps=0,
     )
@@ -46,10 +57,10 @@ def replay(seeds) -> list[dict]:
     genome = np.array(GOLDEN["genome"], dtype=np.float32)
     games = []
     for seed in seeds:
-        result = runner.play(genome, seed, False)
+        outcome = runner.play(genome, seed, False)
         games.append(
-            {"seed": seed, "score": result.score, "steps": result.steps,
-             "death": result.death.value}
+            {"seed": seed, "score": outcome.score, "steps": outcome.steps,
+             "death": outcome.end}
         )
     return games
 

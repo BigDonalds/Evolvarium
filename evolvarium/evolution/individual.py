@@ -18,8 +18,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..game.engine import DeathCause
-
 _ids = itertools.count(1)
 
 
@@ -52,11 +50,12 @@ class Individual:
 
     fitness: float = 0.0
     score: float = 0.0
-    best_episode_score: int = 0
+    best_episode_score: float = 0
     steps: float = 0.0
-    death: DeathCause | None = None
-    death_cell: tuple[int, int] | None = None
+    # How the member's worst episode ended, in the game's own words.
+    end: str | None = None
     terms: dict[str, float] = field(default_factory=dict)
+    signals: dict[str, float] = field(default_factory=dict)
     species_id: int = 0
     evaluated: bool = False
     # Packed replay of this individual's first evaluation episode, when one was
@@ -69,9 +68,9 @@ class Individual:
         self.score = 0.0
         self.best_episode_score = 0
         self.steps = 0.0
-        self.death = None
-        self.death_cell = None
+        self.end = None
         self.terms = {}
+        self.signals = {}
         self.replay = None
         self.evaluated = False
 
@@ -96,8 +95,8 @@ class Individual:
             "score": round(self.score, 3),
             "best_episode_score": self.best_episode_score,
             "steps": round(self.steps, 1),
-            "death": self.death.value if self.death else None,
-            "death_cell": list(self.death_cell) if self.death_cell else None,
+            "end": self.end,
             "terms": {k: round(v, 2) for k, v in self.terms.items()},
+            "signals": {k: round(v, 3) for k, v in self.signals.items()},
             "species": self.species_id,
         }

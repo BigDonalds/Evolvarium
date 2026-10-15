@@ -1,6 +1,6 @@
 """Where the time in a move goes.
 
-A move is three calls in `_Runner.play`: the feature spec turns the episode into
+A move is three calls in `_Runner.play`: the game's observation is encoded into
 inputs, the network picks an action from them, and the game applies it. Training
 adds a cost around all three, handing genomes to worker processes and results
 back. A batched evaluator only speeds up the network, so whether it is worth
@@ -47,13 +47,12 @@ import numpy as np
 
 from .evolution.evaluation import EvalContext, EvalResult, make_runner, run_task
 from .evolution.pool import EvaluationPool
-from .game.board import Turn
-from .game.engine import Episode, EpisodeResult
 from .nn.activations import resolve
 from .nn.network import Architecture, PolicyNetwork
 
-# Snake lengths are grouped in bands this wide. The space scan grows with the
-# body, so the cost of a move is reported per band as well as overall.
+# Moves are grouped by the game's workload in bands this wide. Snake's workload
+# is its length, and the space scan grows with the body, so the cost of a move
+# is reported per band as well as overall.
 BAND_WIDTH = 25
 
 # The timed games keep a copy of the inputs on the first move and every this
@@ -73,7 +72,7 @@ POOL_SEED = 1_000_000
 # ------------------------------------------------------------------- moves
 
 @dataclass
-class LengthBand:
+class WorkloadBand:
     low: int
     high: int
     moves: int
@@ -92,8 +91,8 @@ class LengthBand:
 @dataclass
 class MoveProfile:
     games: int
-    # Every move decided, including one that ends the game in a collision,
-    # which the game's own step count leaves out.
+    # Every move decided, one per agent each step, including one that ends the
+    # game, which the game's own step count may leave out.
     moves: int
     # Seconds over all games, from game setup to the last move.
     untimed: float
@@ -102,7 +101,9 @@ class MoveProfile:
     inputs: float
     network: float
     game: float
-    bands: list[LengthBand]
+    bands: list[WorkloadBand]
+    # What the bands count, in the game's words.
+    workload: str = "workload"
 
     @property
     def rest(self) -> float:
@@ -130,7 +131,7 @@ class MoveProfile:
             out.append(f"    {name:<9} {self.us(seconds):>9.1f}  {seconds / self.timed:>6.1%}")
         out += [
             "",
-            f"    {'snake length':<12} {'moves':>8}  {'inputs':>8} {'network':>8} {'game':>8}"
+            f"    {self.workload:<12} {'moves':>8}  {'inputs':>8} {'network':>8} {'game':>8}"
             "  (us a move)",
         ]
         out += [band.line() for band in self.bands if band.moves]
@@ -138,42 +139,53 @@ class MoveProfile:
 
 
 def _timed_game(runner, genome: np.ndarray, seed: int, sums: list[list[int]],
-                samples: list[np.ndarray], counter: list[int]) -> EpisodeResult:
+                samples: list[np.ndarray], counter: list[int]) -> tuple:
     """`_Runner.play` with the clock read between its three calls.
 
     Exploration is left out: profiles run with it off, as held-out games do.
+    The bands grow as the workload reaches them.
     """
-    ctx = runner.ctx
-    episode = Episode(ctx.board, ctx.episode, seed)
-    network = runner.network.load(genome)
-    spec = runner.spec
+    game = runner.game
+    game.reset(seed)
+    forward = runner.network.load(genome).forward
+    agents = game.agents
+    observe = game.observe
+    encode = game.observation.encode
+    decode = game.actions.decode
+    step = game.step
+    workload = game.workload
     clock = time.perf_counter_ns
-    inputs, decide, game, moves = sums
+    inputs, decide, played, moves = sums
     count = counter[0]
 
-    while not episode.finished:
-        band = len(episode.snake) // BAND_WIDTH
-        t0 = clock()
-        x = spec(episode)
-        t1 = clock()
-        action = network.act(x)
-        t2 = clock()
-        episode.step(Turn(action))
+    while not game.over:
+        band = workload() // BAND_WIDTH
+        while band >= len(moves):
+            for column in sums:
+                column.append(0)
+        actions = {}
+        for agent in agents:
+            t0 = clock()
+            x = encode(observe(agent))
+            t1 = clock()
+            actions[agent] = decode(forward(x))
+            t2 = clock()
+            inputs[band] += t1 - t0
+            decide[band] += t2 - t1
+            moves[band] += 1
+            if count % SAMPLE_EVERY == 0:
+                samples.append(x)
+            count += 1
         t3 = clock()
-        inputs[band] += t1 - t0
-        decide[band] += t2 - t1
-        game[band] += t3 - t2
-        moves[band] += 1
-        if count % SAMPLE_EVERY == 0:
-            samples.append(x)
-        count += 1
+        step(actions)
+        played[band] += clock() - t3
 
     counter[0] = count
-    return episode.result
+    return game.score, game.steps, game.end
 
 
-def _outcome(result: EpisodeResult) -> tuple:
-    return result.score, result.steps, result.death
+def _outcome(outcome) -> tuple:
+    return outcome.score, outcome.steps, outcome.end
 
 
 def profile_moves(ctx: EvalContext, genome: np.ndarray, seeds: list[int],
@@ -186,8 +198,7 @@ def profile_moves(ctx: EvalContext, genome: np.ndarray, seeds: list[int],
     """
     ctx = dataclasses.replace(ctx, exploration_rate=0.0)
     runner = make_runner(ctx)
-    bands = ctx.board.width * ctx.board.height // BAND_WIDTH + 1
-    sums = [[0] * bands for _ in range(4)]
+    sums: list[list[int]] = [[] for _ in range(4)]
     samples: list[np.ndarray] = []
     counter = [0]
     untimed = timed = 0.0
@@ -198,9 +209,9 @@ def profile_moves(ctx: EvalContext, genome: np.ndarray, seeds: list[int],
         middle = time.perf_counter()
         clocked = _timed_game(runner, genome, seed, sums, samples, counter)
         ended = time.perf_counter()
-        if _outcome(clocked) != _outcome(plain):
+        if clocked != _outcome(plain):
             raise RuntimeError(
-                f"seed {seed}: the timed game ended {_outcome(clocked)}, "
+                f"seed {seed}: the timed game ended {clocked}, "
                 f"the untouched one {_outcome(plain)}"
             )
         untimed += middle - started
@@ -208,7 +219,7 @@ def profile_moves(ctx: EvalContext, genome: np.ndarray, seeds: list[int],
         if note is not None and number % 10 == 0:
             note(f"moves: {number} of {len(seeds)} games")
 
-    inputs, decide, game, moves = sums
+    inputs, decide, played, moves = sums
     profile = MoveProfile(
         games=len(seeds),
         moves=sum(moves),
@@ -216,20 +227,21 @@ def profile_moves(ctx: EvalContext, genome: np.ndarray, seeds: list[int],
         timed=timed,
         inputs=sum(inputs) / 1e9,
         network=sum(decide) / 1e9,
-        game=sum(game) / 1e9,
+        game=sum(played) / 1e9,
         bands=[
-            LengthBand(
+            WorkloadBand(
                 low=i * BAND_WIDTH, high=(i + 1) * BAND_WIDTH, moves=moves[i],
-                inputs=inputs[i] / 1e9, network=decide[i] / 1e9, game=game[i] / 1e9,
+                inputs=inputs[i] / 1e9, network=decide[i] / 1e9, game=played[i] / 1e9,
             )
-            for i in range(bands)
+            for i in range(len(moves))
         ],
+        workload=runner.game.workload_label,
     )
     if samples:
         picks = np.linspace(0, len(samples) - 1, min(NETWORK_STATES, len(samples)))
         states = np.stack([samples[int(i)] for i in picks])
     else:
-        states = np.zeros((0, runner.spec.size), dtype=np.float32)
+        states = np.zeros((0, runner.game.observation.size), dtype=np.float32)
     return profile, states
 
 
@@ -264,7 +276,7 @@ def split_inputs(ctx: EvalContext, genome: np.ndarray, seeds: list[int]) -> list
     profiler.create_stats()
     stats = profiler.stats
 
-    code = runner.spec._encode.__code__
+    code = runner.game.encoder().__code__
     root = (code.co_filename, code.co_firstlineno, code.co_name)
     if root not in stats:
         raise RuntimeError(f"cProfile saw no call to {code.co_name}")

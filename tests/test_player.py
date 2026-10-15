@@ -18,12 +18,9 @@ import sys
 
 import numpy as np
 import pytest
-from test_golden import GOLDEN, QUICK_SEEDS, ROOT, recorded
+from test_golden import GOLDEN, QUICK_SEEDS, ROOT, golden_settings, recorded
 
-from evolvarium.config import BoardConfig, EpisodeConfig, FeatureConfig
-from evolvarium.features import FeatureSpec
-from evolvarium.game.board import Turn
-from evolvarium.game.engine import Episode
+from evolvarium.games.snake import SnakeGame
 from evolvarium.nn.activations import ACTIVATIONS as ENGINE_ACTIVATIONS
 from evolvarium.nn.network import Architecture, PolicyNetwork, random_genome
 from evolvarium.persistence import model_file
@@ -42,23 +39,23 @@ def play_both(seeds) -> tuple[list[dict], int, list[tuple]]:
     player = Player.load(MODEL)
     network = PolicyNetwork(Architecture.from_dict(GOLDEN["architecture"]))
     network.load(np.array(GOLDEN["genome"], dtype=np.float32))
-    features = FeatureConfig(**GOLDEN["features"])
-    spec = FeatureSpec(features.spec, features)
-    assert tuple(spec.names) == player.input_names
+    game = SnakeGame(golden_settings())
+    assert game.observation.names == player.input_names
+    decide = game.actions.decode
 
     games, states, differ = [], 0, []
     for seed in seeds:
-        episode = Episode(BoardConfig(**GOLDEN["board"]), EpisodeConfig(**GOLDEN["episode"]), seed)
-        while not episode.finished:
-            inputs = spec(episode)
-            choice = player.choose(inputs.tolist())
-            if choice != network.act(inputs):
-                differ.append((seed, episode.steps, choice, network.act(inputs)))
+        game.reset(seed)
+        while not game.over:
+            inputs = game.observation.encode(game.observe("agent"))
+            choice = player.action(inputs.tolist())
+            engine = decide(network.forward(inputs))
+            if choice != engine:
+                differ.append((seed, game.steps, choice, engine))
             states += 1
-            episode.step(Turn(choice))
-        result = episode.result
-        games.append({"seed": seed, "score": result.score, "steps": result.steps,
-                      "death": result.death.value})
+            game.step({"agent": choice})
+        games.append({"seed": seed, "score": game.score, "steps": game.steps,
+                      "death": game.end})
     return games, states, differ
 
 

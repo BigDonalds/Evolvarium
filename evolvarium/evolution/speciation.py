@@ -63,12 +63,19 @@ def assign(population: list[Individual], species: list[Species], threshold: floa
 
 
 def apply_sharing(species: list[Species]) -> dict[str, float]:
-    """Shared fitness per individual: raw fitness divided by cluster size."""
+    """Shared fitness per individual: raw fitness divided by cluster size.
+
+    Dividing shrinks a positive figure but lifts a negative one toward zero,
+    which would favour the largest cluster. When any fitness is negative, each
+    is measured up from the lowest before it is divided.
+    """
+    lowest = min((m.fitness for group in species for m in group.members), default=0.0)
+    floor = min(lowest, 0.0)
     shared: dict[str, float] = {}
     for group in species:
         size = max(len(group.members), 1)
         for member in group.members:
-            shared[member.id] = member.fitness / size
+            shared[member.id] = (member.fitness - floor) / size
     return shared
 
 

@@ -13,7 +13,9 @@ import pytest
 from evolvarium import held_out
 from evolvarium.cli import main
 from evolvarium.config import CONFIG
+from evolvarium.contract import override
 from evolvarium.evolution.evaluation import make_runner
+from evolvarium.games.snake import SnakeSettings
 from evolvarium.trainer import Trainer
 
 
@@ -88,7 +90,7 @@ def test_each_episode_is_one_seed_played_once_without_exploration(tiny_config):
     expected = [runner.score(champion.genome, seed, 1, False).score for seed in seeds]
     assert champion.scores.tolist() == expected
     assert champion.context.exploration_rate == 0.0
-    assert sum(champion.deaths.values()) == len(seeds)
+    assert sum(champion.ends.values()) == len(seeds)
 
 
 def test_parallel_scoring_matches_serial(tiny_config):
@@ -100,7 +102,7 @@ def test_parallel_scoring_matches_serial(tiny_config):
     held_out.score([parallel], seeds, workers=2)
 
     assert serial.scores.tolist() == parallel.scores.tolist()
-    assert serial.deaths == parallel.deaths
+    assert serial.ends == parallel.ends
 
 
 def test_runs_differing_only_by_seed_or_workers_share_a_configuration(tiny_config):
@@ -108,7 +110,7 @@ def test_runs_differing_only_by_seed_or_workers_share_a_configuration(tiny_confi
         evolution=dataclasses.replace(tiny_config.evolution, workers=3)
     )
     other_encoding = tiny_config.with_overrides(
-        features=dataclasses.replace(tiny_config.features, spec="egocentric_v2")
+        settings=override(SnakeSettings(), "features.spec", "egocentric_v2")
     )
     runs = [
         make_run(tiny_config, 5, "run-e"),
@@ -288,8 +290,9 @@ def test_an_exported_model_scores_like_its_checkpoint(tiny_config, monkeypatch):
     assert exported.run_id == "run-x"
     assert exported.generation == stored.generation
     assert np.array_equal(exported.genome, stored.genome)
-    assert exported.context.board == stored.context.board
-    assert exported.context.features == stored.context.features
+    assert exported.context.game == stored.context.game == "snake"
+    assert exported.context.settings.board == stored.context.settings.board
+    assert exported.context.settings.features == stored.context.settings.features
 
     held_out.score([stored, exported], list(range(900_000, 900_004)), workers=1)
     assert np.array_equal(exported.scores, stored.scores)

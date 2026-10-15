@@ -3,7 +3,7 @@
 Weights are evolved, never trained by gradient descent, so there is no backward
 pass, no optimiser state and no dropout or normalisation layers.
 
-Inputs are consumed exactly as the feature spec produces them. Rescaling the
+Inputs are consumed exactly as the game's observation encodes them. Rescaling the
 input vector against its own mean and standard deviation would couple every
 feature to every other one: an unchanged danger flag would read differently
 purely because the food moved, which removes the fixed meaning the network
@@ -30,14 +30,16 @@ class Architecture:
     output_size: int
 
     @classmethod
-    def from_config(cls, config: NetworkConfig, input_size: int) -> Architecture:
+    def from_config(cls, config: NetworkConfig, input_size: int,
+                    output_size: int) -> Architecture:
+        """The hidden layers come from the configuration; the two ends from the game."""
         if len(config.hidden_layers) != len(config.hidden_activations):
             raise ValueError("hidden_layers and hidden_activations must be the same length")
         return cls(
             input_size=input_size,
             hidden_layers=tuple(config.hidden_layers),
             hidden_activations=tuple(config.hidden_activations),
-            output_size=config.output_size,
+            output_size=output_size,
         )
 
     @property

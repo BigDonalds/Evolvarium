@@ -28,23 +28,18 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import (
-    CONFIG,
-    BoardConfig,
-    EpisodeConfig,
-    FeatureConfig,
-    FitnessConfig,
-    HeldOutConfig,
-)
+from . import games
+from .config import CONFIG, HeldOutConfig
+from .contract import load_settings
 from .evolution.evaluation import EvalContext, EvalResult, make_runner
 from .evolution.pool import EvaluationPool, resolve_workers
-from .features import available_specs
 from .persistence import checkpoint, model_file
 
-# Sections that decide which champion a run ends with. Paths, the dashboard,
-# retention and the worker count change how a run is watched or how fast it
-# goes, never its result, so runs that differ only there share a configuration.
-SEARCH_SECTIONS = ("board", "episode", "features", "network", "evolution", "fitness")
+# Engine sections that decide which champion a run ends with, beside the game
+# and its settings. Paths, the dashboard, retention and the worker count change
+# how a run is watched or how fast it goes, never its result, so runs that
+# differ only there share a configuration.
+SEARCH_SECTIONS = ("network", "evolution")
 IGNORED_SETTINGS = {"evolution": {"workers"}}
 
 # Two-sided 95% quantiles of Student's t, by degrees of freedom.
@@ -67,13 +62,16 @@ class Champion:
     path: Path
     seed: int | None
     generation: int
-    train_best: int
+    # None when no episode of the run was ever recorded as a best.
+    train_best: float | None
     genome: np.ndarray
     context: EvalContext
     # Search settings from the run's manifest; None for runs that predate it.
     settings: dict | None
     scores: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    deaths: Counter = field(default_factory=Counter)
+    ends: Counter = field(default_factory=Counter)
+    # Whether the game counts a higher score as better.
+    higher: bool = True
 
     @property
     def mean(self) -> float:
@@ -155,19 +153,24 @@ class Report:
             out.extend(_group_notes(group_))
             out.append(
                 f"    {'run':<20} {'seed':>5} {'train best':>10} {'mean':>6} {'median':>7} "
-                f"{'p25':>5} {'worst':>6} {'best':>5} {'50+':>4}  deaths"
+                f"{'p25':>5} {'worst':>6} {'best':>5}  ends"
             )
             for c in group_.champions:
-                total = sum(c.deaths.values())
-                deaths = "  ".join(
-                    f"{cause} {count / total:.0%}" for cause, count in c.deaths.most_common(2)
+                total = sum(c.ends.values())
+                ends = "  ".join(
+                    f"{end} {count / total:.0%}" for end, count in c.ends.most_common(2)
                 )
                 seed = "?" if c.seed is None else str(c.seed)
+                train_best = "-" if c.train_best is None else f"{c.train_best:g}"
+                # The quartile is the one on the losing side, whichever way the
+                # game counts.
+                low, high = c.scores.min(), c.scores.max()
+                worst, best = (low, high) if c.higher else (high, low)
+                quartile = np.percentile(c.scores, 25 if c.higher else 75)
                 out.append(
-                    f"    {c.run_id:<20} {seed:>5} {c.train_best:>10} {c.mean:>6.1f} "
-                    f"{np.median(c.scores):>7.1f} {np.percentile(c.scores, 25):>5.1f} "
-                    f"{c.scores.min():>6.0f} {c.scores.max():>5.0f} "
-                    f"{int((c.scores >= 50).sum()):>4}  {deaths}"
+                    f"    {c.run_id:<20} {seed:>5} {train_best:>10} {c.mean:>6.1f} "
+                    f"{np.median(c.scores):>7.1f} {quartile:>5.1f} "
+                    f"{worst:>6g} {best:>5g}  {ends}"
                 )
             interval = group_.interval()
             if interval is not None:
@@ -205,8 +208,8 @@ class Report:
                             "generation": c.generation,
                             "train_best": c.train_best,
                             "mean": c.mean,
-                            "scores": [int(s) for s in c.scores],
-                            "deaths": dict(c.deaths),
+                            "scores": [_plain_number(s) for s in c.scores],
+                            "ends": dict(c.ends),
                         }
                         for c in g.champions
                     ],
@@ -217,6 +220,11 @@ class Report:
                 {**dataclasses.asdict(c), "verdict": c.verdict} for c in self.comparisons
             ],
         }
+
+
+def _plain_number(value) -> int | float:
+    value = float(value)
+    return int(value) if value.is_integer() else value
 
 
 def _group_notes(group_: Group) -> list[str]:
@@ -287,15 +295,20 @@ def load_champion(path: Path) -> Champion:
     run_dir = _run_dir(path)
     manifest = _read_manifest(run_dir / "run.json")
     recorded = manifest.get("config") if manifest else None
+    try:
+        context = run_context(path, meta)
+    except ValueError as error:
+        raise TargetError(f"cannot score {path}: {error}") from error
     return Champion(
         run_id=run_dir.name,
         path=path,
         seed=manifest.get("seed") if manifest else None,
         generation=int(meta.get("generation", 0)),
-        train_best=int(meta.get("best_ever_score", 0)),
+        train_best=meta.get("best_ever_score"),
         genome=genome,
-        context=run_context(path, meta),
+        context=context,
         settings=search_settings(recorded) if recorded else None,
+        higher=_higher(context),
     )
 
 
@@ -306,25 +319,23 @@ def _model_champion(path: Path) -> Champion:
         genome, architecture = model_file.to_genome(document)
     except (OSError, model_file.ModelError) as error:
         raise TargetError(f"cannot read {path}: {error}") from error
-    game = document.get("game") or {}
-    inputs = document["inputs"]
-    spec = inputs.get("encoding")
-    if game.get("name") != "snake" or spec not in available_specs():
+    name = (document.get("game") or {}).get("name")
+    encoding = (document.get("inputs") or {}).get("encoding")
+    try:
+        if not isinstance(name, str):
+            raise ValueError("no game is named")
+        settings = games.get(name).settings_from_model(document)
+    except ValueError as error:
         raise TargetError(
-            f"{path} is a model of {game.get('name')!r} with {spec!r} inputs, "
-            "which this engine cannot play"
-        )
+            f"{path} is a model of {name!r} with {encoding!r} inputs, "
+            f"which this engine cannot play: {error}"
+        ) from error
     source = document.get("source") or {}
     training = (document.get("report") or {}).get("training") or {}
     context = EvalContext(
-        spec_name=spec,
+        game=name,
+        settings=settings,
         architecture=architecture.to_dict(),
-        board=_section(BoardConfig, game.get("board")),
-        episode=_section(EpisodeConfig, game.get("episode")),
-        fitness=FitnessConfig(),
-        features=dataclasses.replace(
-            _section(FeatureConfig, inputs.get("settings")), spec=spec
-        ),
         exploration_rate=0.0,
         replay_steps=CONFIG.history.replay_steps,
     )
@@ -333,10 +344,11 @@ def _model_champion(path: Path) -> Champion:
         path=path,
         seed=None,
         generation=int(source.get("generation") or 0),
-        train_best=int(training.get("best_score", 0)),
+        train_best=training.get("best_score"),
         genome=genome,
         context=context,
         settings=None,
+        higher=_higher(context),
     )
 
 
@@ -347,25 +359,30 @@ def _run_dir(path: Path) -> Path:
 def run_context(path: Path, meta: dict | None = None) -> EvalContext:
     """The rules a checkpoint's run was trained under, ready for scoring.
 
-    Replaying under the run's own rules matters: a board size or episode limit
-    that has since changed in config.py would otherwise score a different game.
+    Replaying under the run's own rules matters: a rule whose default has since
+    changed would otherwise score a different game.
     """
     meta = meta if meta is not None else checkpoint.read_meta(path)
     manifest = _read_manifest(_run_dir(path) / "run.json")
-    sections = (manifest.get("config") if manifest else None) or {}
-    features = dataclasses.replace(
-        _section(FeatureConfig, sections.get("features")), spec=meta["feature_spec"]
-    )
+    recorded = (manifest.get("config") if manifest else None) or {}
+    game, _ = checkpoint.saved_game(meta)
+    settings = checkpoint.saved_settings(meta, recorded)
     return EvalContext(
-        spec_name=meta["feature_spec"],
+        game=game,
+        # Settings added since the run was recorded take their defaults.
+        settings=load_settings(games.get(game).Settings, settings, strict=False),
         architecture=meta["architecture"],
-        board=_section(BoardConfig, sections.get("board")),
-        episode=_section(EpisodeConfig, sections.get("episode")),
-        fitness=_section(FitnessConfig, sections.get("fitness") or meta.get("fitness")),
-        features=features,
         exploration_rate=0.0,
         replay_steps=CONFIG.history.replay_steps,
     )
+
+
+def _higher(context: EvalContext) -> bool:
+    return games.get(context.game).direction == "higher"
+
+
+def _encoding(context: EvalContext) -> str:
+    return str(games.create(context.game, context.settings).model_inputs()["encoding"])
 
 
 def _read_manifest(path: Path) -> dict | None:
@@ -375,19 +392,18 @@ def _read_manifest(path: Path) -> dict | None:
         return None
 
 
-def _section(cls, data: dict | None):
-    """Rebuild a config section from JSON, tolerating settings added or removed since."""
-    if not data:
-        return cls()
-    known = {f.name for f in dataclasses.fields(cls)}
-    return cls(**{k: v for k, v in data.items() if k in known})
-
-
 # ------------------------------------------------------------ configurations
 
 def search_settings(config: dict) -> dict:
-    """The part of a recorded configuration that can change a run's result."""
-    settings = {}
+    """The part of a recorded configuration that can change a run's result.
+
+    Manifests from before games carried their own settings are read into the
+    same shape, so an old run and a new one under the same rules group together.
+    """
+    settings = {
+        "game": str(config.get("game", "snake")),
+        "settings": checkpoint.saved_settings({}, config),
+    }
     for section in SEARCH_SECTIONS:
         values = dict(config.get(section) or {})
         for name in IGNORED_SETTINGS.get(section, ()):
@@ -397,17 +413,34 @@ def search_settings(config: dict) -> dict:
 
 
 def describe(settings: dict) -> str:
-    """Name a configuration by how it differs from the current defaults."""
+    """Name a configuration by how it differs from the current defaults.
+
+    A game's own settings are named by their path inside its settings, such as
+    "features.spec"; the engine's by section, such as "evolution.elite_count".
+    """
+    game = settings.get("game", CONFIG.game)
+    try:
+        base = games.resolve(dataclasses.replace(CONFIG, game=game))
+    except games.UnknownGame:
+        base = CONFIG
     # Through JSON, so tuples compare equal to the lists a manifest stores.
-    defaults = search_settings(json.loads(json.dumps(dataclasses.asdict(CONFIG), default=str)))
-    changes = []
+    defaults = search_settings(json.loads(json.dumps(dataclasses.asdict(base), default=str)))
+    changes = [] if game == CONFIG.game else [f"game={game}"]
+    _differences(settings.get("settings", {}), defaults["settings"], "", changes)
     for section in SEARCH_SECTIONS:
-        base = defaults[section]
-        for name, value in settings.get(section, {}).items():
-            if name in base and value != base[name]:
-                shown = value if isinstance(value, str) else json.dumps(value)
-                changes.append(f"{section}.{name}={shown}")
+        _differences(settings.get(section, {}), defaults[section], f"{section}.", changes)
     return ", ".join(changes) or "defaults"
+
+
+def _differences(values: dict, base: dict, prefix: str, out: list[str]) -> None:
+    for name, value in values.items():
+        if name not in base:
+            continue
+        if isinstance(value, dict) and isinstance(base[name], dict):
+            _differences(value, base[name], f"{prefix}{name}.", out)
+        elif value != base[name]:
+            shown = value if isinstance(value, str) else json.dumps(value)
+            out.append(f"{prefix}{name}={shown}")
 
 
 def group(champions: list[Champion], same_config: bool = False) -> list[Group]:
@@ -425,15 +458,16 @@ def group(champions: list[Champion], same_config: bool = False) -> list[Group]:
             identity = json.dumps(c.settings, sort_keys=True)
             label = describe(c.settings)
         else:
-            # Known only by encoding and network shape. Kept apart rather than
-            # assumed to match anything else. An exported model records its
-            # game and inputs but not the search that produced it.
+            # Known only by game, inputs and network shape. Kept apart rather
+            # than assumed to match anything else. An exported model records
+            # its game and inputs but not the search that produced it.
             exported = c.path.suffix == ".json"
+            encoding = _encoding(c.context)
             identity = ("exported " if exported else "unrecorded ") + json.dumps(
-                [c.context.spec_name, c.context.architecture], sort_keys=True
+                [c.context.game, encoding, c.context.architecture], sort_keys=True
             )
             kind = "exported model" if exported else "configuration not recorded"
-            label = f"{kind}, {c.context.spec_name}"
+            label = f"{kind}, {encoding}"
         key = f"{identity} @ {c.generation}"
         if key not in groups:
             groups[key] = Group(label, c.generation, [])
@@ -444,10 +478,11 @@ def group(champions: list[Champion], same_config: bool = False) -> list[Group]:
 # ------------------------------------------------------------------- scoring
 
 def score(champions: list[Champion], seeds: list[int], workers: int) -> None:
-    """Play every champion once on every seed, filling in scores and deaths.
+    """Play every champion once on every seed, filling in scores and endings.
 
     Champions trained under identical rules share a pool. One from a different
-    board or encoding gets its own, since a pool is built around one context.
+    game or different settings gets its own, since a pool is built around one
+    context.
     """
     batches: dict[str, list[Champion]] = {}
     for c in champions:
@@ -460,7 +495,7 @@ def score(champions: list[Champion], seeds: list[int], workers: int) -> None:
         for i, c in enumerate(batch):
             chunk = results[i * len(seeds):(i + 1) * len(seeds)]
             c.scores = np.array([r.score for r in chunk], dtype=float)
-            c.deaths = Counter(r.death.value for r in chunk)
+            c.ends = Counter(r.end for r in chunk)
 
 
 def _play(ctx: EvalContext, tasks: list[tuple], workers: int) -> list[EvalResult]:
@@ -597,8 +632,12 @@ def choose_by_average(
     lucky screen can put a genome in the final; it cannot win the final on its own.
 
     `score(genomes, seeds)` returns a candidates-by-seeds matrix of scores, and
-    defaults to playing the games under `context`.
+    defaults to playing the games under `context`. Without a context the scores
+    are taken as higher-is-better.
     """
+    # Scores are flipped for a game that wants them low, so "best" below is
+    # always the largest.
+    sign = 1.0 if context is None or _higher(context) else -1.0
     if score is None:
         def score(genomes, seeds):
             return _score_matrix(context, genomes, seeds, workers)
@@ -608,7 +647,7 @@ def choose_by_average(
     final_seeds = list(range(final_start, final_start + final_games))
 
     genomes = [genome for _, genome in candidates]
-    screen = np.asarray(score(genomes, screen_seeds), dtype=float)
+    screen = sign * np.asarray(score(genomes, screen_seeds), dtype=float)
     order = np.argsort(-screen.mean(axis=1), kind="stable")
     chosen = [int(i) for i in order[:finalists]]
     stored = next((i for i, (source, _) in enumerate(candidates)
@@ -616,7 +655,7 @@ def choose_by_average(
     if stored is not None and stored not in chosen:
         chosen.append(stored)
 
-    final = np.asarray(score([genomes[i] for i in chosen], final_seeds), dtype=float)
+    final = sign * np.asarray(score([genomes[i] for i in chosen], final_seeds), dtype=float)
     totals = np.concatenate([screen[chosen], final], axis=1).mean(axis=1)
     best = int(np.argmax(totals))
     winner = chosen[best]
@@ -625,8 +664,10 @@ def choose_by_average(
         source=candidates[winner][0],
         candidates=len(candidates),
         games=screen_games + final_games,
-        mean=float(totals[best]),
-        champion_mean=float(totals[chosen.index(stored)]) if stored is not None else None,
+        mean=float(sign * totals[best]),
+        champion_mean=(
+            float(sign * totals[chosen.index(stored)]) if stored is not None else None
+        ),
     )
 
 

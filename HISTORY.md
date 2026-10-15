@@ -10,6 +10,81 @@ directly.
 
 ---
 
+## Games behind a contract - Snake moves out of the engine
+
+At the baseline the engine was Snake. The population built a Snake episode to
+score a genome, the evaluator called Snake's input encoder, fitness was Snake's
+formula, checkpoints and the model file recorded the board and the feature spec,
+the profiler grouped its timings by snake length, and the export panel's
+achievements counted food. Training anything else meant changing all of them.
+
+`evolvarium/contract.py` now says what a game gives the engine. It resets from a
+seed, and the same seed gives the same episode. It names the agents that share
+an episode, one unless it says otherwise. It declares the inputs each agent sees
+by name, as numbers or as categories, and the engine gives a category one column
+per value so no value reads as larger than another. It declares its actions in
+its own terms: a choice among named options, a number within a range, or several
+of these at once, which arrive as a dict by part name. Each step it takes an
+action for every agent together. It says when the episode is over and why, gives
+the score and whether a higher or a lower score is better, and may report named
+measurements beside the score. The engine sizes the network from the inputs and
+actions, encodes what the game observes and decodes the outputs, so a game never
+handles the network's arrays.
+
+Snake moved to `evolvarium/games/snake`: its board, episode, inputs, fitness,
+replay packing and achievements, and its settings. The board, episode, features
+and fitness sections of the engine's configuration are now `SnakeSettings`.
+Nothing in the engine imports from that package. Games are found by name,
+"snake" for the built-in one and "module:Class" for one that lives anywhere
+Python can import it, and worker processes find a game the same way. The
+configuration has `game` and `settings`, and the run manifest records both.
+
+**Lower is better.** A game can ask for a lower score. Fitness is then the score
+negated, unless the game defines its own. Records and a generation's best
+episode follow the game's direction, and a genome's worst ending is its highest
+score. The best score so far starts as none rather than 0, so the first
+generation is a record whichever way the game counts. Roulette selection clipped
+negative fitness to 0, which would give every member of such a game the same
+weight. When any fitness is negative it now measures every member up from the
+lowest. Fitness sharing divided fitness by the size of the species, which lifts
+a negative figure toward zero and would favour the largest species, so it does
+the same. Neither changes anything for a run where no fitness is negative.
+
+**Checking it.** `tests/test_contract.py` defines a second game in the test
+module itself: two agents on a line, who score lower the closer they finish to
+the middle, with a category among their inputs and an action made of a choice
+and a range. It trains through the population and gets better, round-trips
+through a checkpoint, scores the same in worker processes with exploration on,
+and is refused by a configuration that plays Snake. The same file tests input
+encoding, action decoding, settings and the registry's errors, 30 tests in all.
+The 60 held-out games replay unchanged, the player makes the engine's choice on
+every one of their moves, and resumed runs still match uninterrupted ones.
+
+**Speed.** The loop now builds a dict of actions every step and goes through the
+game's encode and decode. On the ARM64 build, 15 held-out games, 50,056 moves,
+took 112.0 µs a move before the change and 111.9 to 113.0 after, so it costs
+nothing measurable next to the inputs.
+
+**Checkpoints** are format 4. They record the game, the name of its inputs, the
+input names themselves and the settings. Loading refuses a checkpoint whose
+game, encoding or input names differ from the configuration's. Older
+checkpoints still load and are read as Snake, and `inspect` and `evaluate` take
+their settings from the run's manifest.
+
+**Names.** How an episode ended is its end rather than its death: `ends` in the
+generation summaries and the reports, and summaries that say `deaths` are still
+read. The console's `eat%` column is `scored%`. The held-out report drops the
+`50+` column, which only meant something for Snake, and its worst, best and
+quartiles follow the game's direction. `inspect` prints the game, its encoding
+and each setting changed from the default as a dotted path. The profiler groups
+timings by whatever the game says drives the cost of a step, snake length for
+Snake, and adds groups as the games reach them instead of sizing them from the
+board.
+
+**The model file** already named its game. It picks an action as the highest
+output, so it holds games whose actions are a single choice. Other games train,
+and exporting one says why it cannot.
+
 ## Training events - the loop announces, everything else listens
 
 The trainer used to call everything that cared about a generation itself. From

@@ -32,7 +32,12 @@ def rank(population: list[Individual], rng: np.random.Generator) -> Individual:
 
 
 def roulette(population: list[Individual], rng: np.random.Generator) -> Individual:
-    weights = np.array([max(i.fitness, 0.0) for i in population], dtype=np.float64)
+    weights = np.array([i.fitness for i in population], dtype=np.float64)
+    # A game that wants its score low has negative fitness throughout, so the
+    # wheel is measured up from the lowest member rather than from zero.
+    lowest = weights.min()
+    if lowest < 0.0:
+        weights -= lowest
     total = weights.sum()
     if total <= 0.0:
         return population[int(rng.integers(len(population)))]

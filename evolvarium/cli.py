@@ -10,10 +10,12 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from . import games
 from .config import CONFIG, Config
+from .contract import override, settings_dict
 from .events import EventBus, Note
 from .evolution.pool import resolve_workers
-from .features import available_specs
+from .games.snake.features import available_specs
 from .held_out import (
     TargetError,
     candidates_from,
@@ -65,21 +67,20 @@ def _apply_overrides(config: Config, args: argparse.Namespace) -> Config:
     if changes:
         sections["evolution"] = dataclasses.replace(config.evolution, **changes)
 
-    if args.board is not None:
-        sections["board"] = dataclasses.replace(
-            config.board, width=args.board, height=args.board
-        )
-
-    if args.spec is not None:
-        sections["features"] = dataclasses.replace(config.features, spec=args.spec)
-
-    if args.avoidable_penalty is not None or args.death_penalty is not None:
-        changes = {}
-        if args.avoidable_penalty is not None:
-            changes["avoidable_death_fraction"] = args.avoidable_penalty
-        if args.death_penalty is not None:
-            changes["death_fraction"] = args.death_penalty
-        sections["fitness"] = dataclasses.replace(config.fitness, **changes)
+    # Snake's own settings, by their path inside its settings.
+    snake_flags = {
+        "board.width": args.board,
+        "board.height": args.board,
+        "features.spec": args.spec,
+        "fitness.avoidable_death_fraction": args.avoidable_penalty,
+        "fitness.death_fraction": args.death_penalty,
+    }
+    changes = {k: v for k, v in snake_flags.items() if v is not None}
+    if changes:
+        settings = games.settings_for(config)
+        for path, value in changes.items():
+            settings = override(settings, path, value)
+        sections["settings"] = settings
 
     if args.port is not None or args.no_hold:
         changes = {}
@@ -128,12 +129,14 @@ def command_train(args: argparse.Namespace) -> int:
     server = DashboardServer(trainer, config.server.host, config.server.port)
     served = server.start() if not args.headless else False
 
+    game = trainer.population.game
     reporter.banner(
         run_id=trainer.run_id,
         generation=trainer.population.generation,
         population=len(trainer.population.members),
-        spec=trainer.population.feature_spec.name,
-        inputs=trainer.population.feature_spec.size,
+        game=trainer.config.game,
+        encoding=str(game.model_inputs()["encoding"]),
+        inputs=game.observation.size,
         genome=trainer.population.architecture.genome_size,
         url=server.url if served else "disabled",
         workers=trainer.workers,
@@ -180,29 +183,48 @@ def command_inspect(args: argparse.Namespace) -> int:
     print(f"  size          {info.size_bytes / 1024:.1f} KiB")
     print(f"  generation    {info.generation}")
     print(f"  population    {info.population_size}")
-    print(f"  best score    {info.best_score}")
+    print(f"  best score    {'-' if info.best_score is None else f'{info.best_score:g}'}")
     print(f"  best fitness  {info.best_fitness:.2f}")
-    print(f"  encoding      {info.feature_spec}")
+    print(f"  game          {info.game}")
+    print(f"  encoding      {info.encoding}")
     print(f"  architecture  {meta.get('architecture')}")
     print(f"  episodes      {meta.get('total_episodes', 0):,}")
 
+    recorded = None
     manifest_path = path.parent.parent / "run.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        recorded = manifest.get("config") or {}
         print(f"  seed          {manifest.get('seed')}")
-        evolution = manifest.get("config", {}).get("evolution", {})
+        evolution = recorded.get("evolution", {})
         tuned = {k: v for k, v in evolution.items()
                  if v != getattr(CONFIG.evolution, k, object())}
         print(f"  evolution     {tuned or 'defaults'}")
 
-    fitness = meta.get("fitness") or {}
-    tuned = {k: v for k, v in fitness.items()
-             if v != getattr(CONFIG.fitness, k, object())}
-    if fitness:
-        print(f"  fitness       {tuned or 'defaults'}")
+    settings = checkpoint.saved_settings(meta, recorded)
+    try:
+        defaults = settings_dict(games.get(info.game).Settings())
+    except games.UnknownGame:
+        defaults = {}
+    # Through JSON, so tuples compare equal to the lists a checkpoint stores.
+    tuned = _changed(settings, json.loads(json.dumps(defaults, default=str)))
+    if settings:
+        print(f"  settings      {tuned or 'defaults'}")
     else:
-        print("  fitness       not recorded (checkpoint predates config capture)")
+        print("  settings      not recorded (checkpoint predates config capture)")
     return 0
+
+
+def _changed(values: dict, defaults: dict, prefix: str = "") -> dict:
+    """Settings that differ from their defaults, by dotted path."""
+    changed = {}
+    for name, value in values.items():
+        base = defaults.get(name, object())
+        if isinstance(value, dict) and isinstance(base, dict):
+            changed.update(_changed(value, base, f"{prefix}{name}."))
+        elif value != base:
+            changed[f"{prefix}{name}"] = value
+    return changed
 
 
 def command_export(args: argparse.Namespace) -> int:
@@ -214,7 +236,11 @@ def command_export(args: argparse.Namespace) -> int:
     import numpy as np
 
     # The rules the run was trained under, which the model file records.
-    context = run_context(path)
+    try:
+        context = run_context(path)
+    except ValueError as error:
+        print(f"  cannot export {path}: {error}")
+        return 1
     selection = None
     if args.pick == "best-average":
         requested = args.workers if args.workers is not None else CONFIG.evolution.workers
@@ -237,11 +263,9 @@ def command_export(args: argparse.Namespace) -> int:
 
     config = CONFIG
     population_meta = checkpoint.read_meta(path)
-    from .features import FeatureSpec
     from .nn.network import Architecture
 
     architecture = Architecture.from_dict(population_meta["architecture"])
-    spec = FeatureSpec(context.spec_name, context.features)
     destination = config.paths.exports_dir / f"{args.name}.json"
     run_dir = path.parent.parent
 
@@ -249,14 +273,14 @@ def command_export(args: argparse.Namespace) -> int:
         generation=int(population_meta.get("generation", 0)),
         genome=genome,
         summaries=lineage_summaries(run_dir),
-        board=context.board,
-        episode=context.episode,
-        features=context.features,
+        game=games.create(context.game, context.settings),
         architecture=architecture,
-        feature_spec=spec,
         run_id=run_dir.name,
         destination=destination,
     )
+    if report["unsupported"]:
+        print(f"  cannot export: {report['unsupported']}")
+        return 1
     if selection:
         report["selection"] = selection
     result = export_model.write_model(
@@ -391,7 +415,7 @@ def command_specs(_: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="evolvarium", description="Neuroevolution of Snake agents"
+        prog="evolvarium", description="Neuroevolution of game-playing agents"
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -399,9 +423,10 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--generations", type=int, default=None, help="stop after this many")
     train.add_argument("--population", type=int, default=None)
     train.add_argument("--episodes", type=int, default=None, help="evaluation episodes per genome")
-    train.add_argument("--board", type=int, default=None, help="square board size in cells")
+    train.add_argument("--board", type=int, default=None,
+                       help="snake: square board size in cells")
     train.add_argument("--spec", default=None, choices=sorted(available_specs()),
-                       help="state encoding to train under")
+                       help="snake: state encoding to train under")
     train.add_argument("--tournament", type=int, default=None,
                        help="tournament size; higher is stronger selection pressure")
     train.add_argument("--elites", type=int, default=None,
@@ -419,10 +444,10 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--crossover-rate", type=float, default=None,
                        help="share of offspring built from two parents")
     train.add_argument("--avoidable-penalty", type=float, default=None,
-                       help="cost of dying when a safe move existed, as a fraction "
-                            "of food earned")
+                       help="snake: cost of dying when a safe move existed, as a "
+                            "fraction of food earned")
     train.add_argument("--death-penalty", type=float, default=None,
-                       help="cost of dying at all, as a fraction of food earned; "
+                       help="snake: cost of dying at all, as a fraction of food earned; "
                             "running out the clock is exempt")
     train.add_argument("--workers", type=int, default=None,
                        help="evaluation worker processes; 0 uses every core but one, 1 is serial")
@@ -503,7 +528,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="also write the measurements to this file")
     profile.set_defaults(func=command_profile)
 
-    specs = sub.add_parser("specs", help="list feature encodings")
+    specs = sub.add_parser("specs", help="list Snake's feature encodings")
     specs.set_defaults(func=command_specs)
 
     return parser

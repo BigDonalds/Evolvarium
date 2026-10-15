@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from . import games
 from .config import Config
 from .events import (
     EventBus,
@@ -49,6 +50,9 @@ class Trainer:
         events: EventBus | None = None,
         max_generations: int | None = None,
     ):
+        # The game's settings are filled in first, so the manifest records the
+        # rules the run actually plays under.
+        config = games.resolve(config)
         self.config = config
         self.run_id = run_id or new_run_id()
         self.run_dir = config.paths.runs_dir / self.run_id
@@ -236,10 +240,13 @@ class Trainer:
             "episodes_per_second": (
                 round(population.total_episodes / elapsed, 1) if elapsed > 1 else 0.0
             ),
-            "feature_spec": population.feature_spec.name,
-            "input_size": population.feature_spec.size,
+            "game": self.config.game,
+            "direction": population.game.direction,
+            "encoding": population.game.model_inputs()["encoding"],
+            "input_size": population.game.observation.size,
+            "actions": list(population.game.actions.names),
             "genome_size": population.architecture.genome_size,
-            "board": {"width": self.config.board.width, "height": self.config.board.height},
+            "scene": population.game.scene(),
             "resumed_from": self.resumed_from,
             "workers": self.workers,
             "last_generation": report.to_dict() if report else None,

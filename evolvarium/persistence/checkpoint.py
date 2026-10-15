@@ -7,15 +7,18 @@ arrays, and .npz keeps checkpoints readable by any numpy install.
 Exporting a standalone model is a separate, explicit action that lives in
 `export_model` and is triggered from the dashboard or the command line.
 
-Every checkpoint records the feature spec and architecture it was trained under.
-Loading refuses a mismatch rather than reshaping the genome to fit, because a
-resized genome is not the model that was saved.
+Every checkpoint records the game, the inputs and the architecture it was
+trained under. Loading refuses a mismatch rather than reshaping the genome to
+fit, because a resized genome is not the model that was saved.
 
 From format 3 a checkpoint also holds everything the next generation reads that
 is not a setting: the random generator's state, the species and the members'
 ids and parents. A run resumed from it continues exactly as the uninterrupted
 run would have. Format 2 checkpoints still load, but the resumed run draws new
 random numbers from the seed it is given and goes its own way.
+
+Format 4 names the game. Checkpoints before it come from the engine that played
+Snake alone, and load as Snake checkpoints.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from pathlib import Path
 import numpy as np
 
 from ..config import CheckpointConfig, Config
+from ..contract import settings_dict
 from ..events import (
     CheckpointSaved,
     Event,
@@ -44,7 +48,7 @@ from ..evolution.individual import Individual, id_number, reserve_ids
 from ..evolution.population import Population
 from ..nn.network import Architecture, random_genome
 
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 
 # The dashboard lists and inspects checkpoints on its own thread while the
 # trainer writes them. Windows refuses to replace a file that still has an open
@@ -76,10 +80,11 @@ def _replace_with_retry(source: Path, target: Path, attempts: int = 5) -> None:
 class CheckpointInfo:
     path: Path
     generation: int
-    best_score: int
+    best_score: float | None
     best_fitness: float
     population_size: int
-    feature_spec: str
+    game: str
+    encoding: str
     saved_at: str
     size_bytes: int
 
@@ -91,7 +96,8 @@ class CheckpointInfo:
             "best_score": self.best_score,
             "best_fitness": round(self.best_fitness, 2),
             "population_size": self.population_size,
-            "feature_spec": self.feature_spec,
+            "game": self.game,
+            "encoding": self.encoding,
             "saved_at": self.saved_at,
             "size_bytes": self.size_bytes,
         }
@@ -111,12 +117,14 @@ def save(population: Population, path: Path) -> CheckpointInfo:
         "best_ever_fitness": population.best_ever_fitness,
         "best_ever_generation": population.best_ever_generation,
         "stagnation": population.stagnation,
-        "feature_spec": population.feature_spec.name,
+        "game": population.config.game,
+        "encoding": _encoding(population),
+        "inputs": list(population.game.observation.names),
         "architecture": population.architecture.to_dict(),
         # Recorded so a finished run can say what produced it. Comparing two runs
         # by launch order alone is a good way to attribute a result to the wrong
         # configuration.
-        "fitness": dataclasses.asdict(population.config.fitness),
+        "settings": settings_dict(population.config.settings),
         "evolution": dataclasses.asdict(population.config.evolution),
         "origins": [m.origin for m in population.members],
         "ages": [m.age for m in population.members],
@@ -161,10 +169,48 @@ def save(population: Population, path: Path) -> CheckpointInfo:
         best_score=population.best_ever_score,
         best_fitness=population.best_ever_fitness,
         population_size=len(population.members),
-        feature_spec=population.feature_spec.name,
+        game=population.config.game,
+        encoding=meta["encoding"],
         saved_at=meta["saved_at"],
         size_bytes=path.stat().st_size,
     )
+
+
+def _encoding(population: Population) -> str:
+    return str(population.game.model_inputs()["encoding"])
+
+
+def saved_game(meta: dict) -> tuple[str, str]:
+    """The game a checkpoint was trained on and the name of the inputs it read."""
+    if "game" in meta:
+        return str(meta["game"]), str(meta.get("encoding", "unknown"))
+    return "snake", str(meta.get("feature_spec", "unknown"))
+
+
+# Before format 4 the engine played Snake alone and kept its rules at the top
+# level of a configuration, beside the engine's own sections.
+_LEGACY_SECTIONS = ("board", "episode", "features", "fitness")
+
+
+def saved_settings(meta: dict, recorded: dict | None = None) -> dict:
+    """The game settings a checkpoint was trained under, as plain data.
+
+    `recorded` is the configuration from the run's manifest, if there is one.
+    It is the only record of the board and episode rules in a checkpoint older
+    than format 4.
+    """
+    if "settings" in meta:
+        return dict(meta["settings"] or {})
+    recorded = recorded or {}
+    if "game" in recorded:
+        return dict(recorded.get("settings") or {})
+    settings = {name: dict(recorded[name]) for name in _LEGACY_SECTIONS if recorded.get(name)}
+    if "fitness" not in settings and meta.get("fitness"):
+        settings["fitness"] = dict(meta["fitness"])
+    # The checkpoint's own record of its inputs wins over a manifest's.
+    if "feature_spec" in meta:
+        settings["features"] = {**settings.get("features", {}), "spec": meta["feature_spec"]}
+    return settings
 
 
 def read_meta(path: Path) -> dict:
@@ -174,13 +220,15 @@ def read_meta(path: Path) -> dict:
 
 def inspect(path: Path) -> CheckpointInfo:
     meta = read_meta(path)
+    game, encoding = saved_game(meta)
     return CheckpointInfo(
         path=path,
         generation=int(meta.get("generation", 0)),
-        best_score=int(meta.get("best_ever_score", 0)),
+        best_score=meta.get("best_ever_score"),
         best_fitness=float(meta.get("best_ever_fitness", 0.0)),
         population_size=len(meta.get("origins", [])),
-        feature_spec=str(meta.get("feature_spec", "unknown")),
+        game=game,
+        encoding=encoding,
         saved_at=str(meta.get("saved_at", "")),
         size_bytes=path.stat().st_size,
     )
@@ -210,15 +258,26 @@ def load(path: Path, config: Config, seed: int | None = None) -> Population:
             if "species_representatives" in archive else None
         )
 
-    spec = meta.get("feature_spec")
-    if spec != config.features.spec:
+    game, encoding = saved_game(meta)
+    if game != config.game:
         raise CheckpointMismatch(
-            f"checkpoint was trained with feature spec {spec!r}, "
-            f"current configuration uses {config.features.spec!r}"
+            f"checkpoint was trained on {game!r}, current configuration plays {config.game!r}"
+        )
+    population = Population(config, seed=seed)
+    current = _encoding(population)
+    if encoding != current:
+        raise CheckpointMismatch(
+            f"checkpoint was trained with {encoding!r} inputs, "
+            f"current configuration uses {current!r}"
+        )
+    inputs = meta.get("inputs")
+    if inputs is not None and tuple(inputs) != population.game.observation.names:
+        raise CheckpointMismatch(
+            f"checkpoint was trained on inputs {inputs}, "
+            f"the game now reads {list(population.game.observation.names)}"
         )
 
     saved_arch = Architecture.from_dict(meta["architecture"])
-    population = Population(config, seed=seed)
     if saved_arch != population.architecture:
         raise CheckpointMismatch(
             f"checkpoint architecture {saved_arch.to_dict()} does not match "
@@ -275,7 +334,7 @@ def load(path: Path, config: Config, seed: int | None = None) -> Population:
 
     population.generation = int(meta.get("generation", 0))
     population.total_episodes = int(meta.get("total_episodes", 0))
-    population.best_ever_score = int(meta.get("best_ever_score", 0))
+    population.best_ever_score = meta.get("best_ever_score")
     population.best_ever_fitness = float(meta.get("best_ever_fitness", 0.0))
     population.best_ever_generation = int(meta.get("best_ever_generation", 0))
     population.stagnation = int(meta.get("stagnation", 0))

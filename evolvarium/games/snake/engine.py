@@ -11,9 +11,9 @@ import random
 from dataclasses import dataclass, field
 from enum import Enum
 
-from ..config import BoardConfig, EpisodeConfig
 from .board import Board, Cell, Direction, Turn
 from .food import place_food
+from .settings import BoardConfig, EpisodeConfig
 from .snake import Snake
 
 

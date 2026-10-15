@@ -116,10 +116,7 @@ class DashboardServer:
             "generation": record.generation,
             "summary": record.summary,
             "agents": record.agents,
-            "board": {
-                "width": self.trainer.config.board.width,
-                "height": self.trainer.config.board.height,
-            },
+            "scene": self.trainer.population.game.scene(),
         }
 
     def control(self, payload: dict) -> dict:
@@ -167,16 +164,12 @@ class DashboardServer:
 
     def export_preview(self, generation: int | None) -> dict:
         resolved, genome = self._genome_for(generation)
-        config = self.trainer.config
         report = export_model.build_report(
             generation=resolved,
             genome=genome,
             summaries=lineage_summaries(self.trainer.run_dir),
-            board=config.board,
-            episode=config.episode,
-            features=config.features,
+            game=self.trainer.population.game,
             architecture=self.trainer.population.architecture,
-            feature_spec=self.trainer.population.feature_spec,
             run_id=self.trainer.run_id,
             destination=self._export_destination(),
         )
@@ -195,6 +188,8 @@ class DashboardServer:
             }
 
         report = self.export_preview(generation)
+        if report["unsupported"]:
+            return {"error": f"cannot export: {report['unsupported']}", "generation": resolved}
         return export_model.write_model(
             report=report,
             genome=genome,

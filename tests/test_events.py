@@ -23,6 +23,7 @@ from evolvarium.events import (
     RunStarted,
 )
 from evolvarium.evolution.pool import EvaluationPool
+from evolvarium.games.snake.settings import BoardConfig, EpisodeConfig, SnakeSettings
 from evolvarium.persistence import checkpoint, export_model
 from evolvarium.trainer import Trainer
 from evolvarium.web.server import DashboardServer
@@ -31,8 +32,10 @@ from evolvarium.web.stream import EventLog
 
 def make_config(tmp_path, workers: int = 1):
     return CONFIG.with_overrides(
-        board=dataclasses.replace(CONFIG.board, width=8, height=8),
-        episode=dataclasses.replace(CONFIG.episode, starvation_limit=40, max_steps=400),
+        settings=SnakeSettings(
+            board=BoardConfig(width=8, height=8),
+            episode=EpisodeConfig(starvation_limit=40, max_steps=400),
+        ),
         evolution=dataclasses.replace(
             CONFIG.evolution, population_size=10, evaluation_episodes=1, elite_count=2,
             immigrant_count=1, workers=workers,

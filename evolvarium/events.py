@@ -79,7 +79,7 @@ class GenerationEvaluated(Event):
 class RecordSet(Event):
     kind: ClassVar[str] = "record"
     generation: int
-    score: int
+    score: float
     fitness: float
 
 
@@ -125,7 +125,8 @@ class RunFinished(Event):
     kind: ClassVar[str] = "run_finished"
     generation: int
     episodes: int
-    best_score: int
+    # None when the run ended before its first generation was scored.
+    best_score: float | None
     reason: str
     error: str | None = None
 

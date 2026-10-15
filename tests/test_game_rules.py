@@ -6,15 +6,17 @@ import dataclasses
 
 import pytest
 
-from evolvarium.config import CONFIG
-from evolvarium.game.board import Board, Direction, Turn
-from evolvarium.game.engine import DeathCause, Episode
-from evolvarium.game.snake import Snake
+from evolvarium.games.snake.board import Board, Direction, Turn
+from evolvarium.games.snake.engine import DeathCause, Episode
+from evolvarium.games.snake.settings import SnakeSettings
+from evolvarium.games.snake.snake import Snake
+
+SNAKE = SnakeSettings()
 
 
 def make_episode(**episode_overrides) -> Episode:
-    rules = dataclasses.replace(CONFIG.episode, **episode_overrides)
-    return Episode(CONFIG.board, rules, seed=7)
+    rules = dataclasses.replace(SNAKE.episode, **episode_overrides)
+    return Episode(SNAKE.board, rules, seed=7)
 
 
 def test_turns_are_relative_to_heading():
@@ -56,7 +58,7 @@ def test_eating_grows_and_moving_does_not():
 def test_wall_collision_ends_episode():
     episode = make_episode()
     episode.food = (0, 0)
-    for _ in range(CONFIG.board.height + 2):
+    for _ in range(SNAKE.board.height + 2):
         if episode.finished:
             break
         episode.step(Turn.STRAIGHT)
@@ -67,7 +69,7 @@ def test_wall_collision_ends_episode():
 def test_following_own_tail_is_allowed():
     """The tail vacates on the same tick, so entering it must not be fatal."""
     episode = make_episode()
-    board = Board(CONFIG.board.width, CONFIG.board.height)
+    board = Board(SNAKE.board.width, SNAKE.board.height)
     episode.snake = Snake((5, 5), Direction.UP, 1)
     snake = episode.snake
     snake._body.clear()
@@ -108,7 +110,7 @@ def test_episode_is_deterministic_for_a_seed():
     """Same seed gives the same game; different seeds place food differently."""
 
     def food_sequence(seed: int) -> list[tuple[int, int]]:
-        episode = Episode(CONFIG.board, CONFIG.episode, seed)
+        episode = Episode(SNAKE.board, SNAKE.episode, seed)
         seen = [episode.food]
         while not episode.finished and episode.steps < 60:
             episode.step(Turn.STRAIGHT if episode.steps % 4 else Turn.RIGHT)
