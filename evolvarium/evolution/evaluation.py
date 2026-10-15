@@ -23,6 +23,7 @@ between a speedup and a serialisation bottleneck.
 
 from __future__ import annotations
 
+import signal
 from dataclasses import dataclass
 from typing import Any
 
@@ -132,8 +133,14 @@ _runner: _Runner | None = None
 
 
 def init_worker(ctx: EvalContext) -> None:
-    """Process initialiser: build the spec and network once per worker."""
+    """Process initialiser: build the spec and network once per worker.
+
+    Workers ignore Ctrl+C. The console delivers it to every process attached to
+    it, and a worker that died on it would take the generation in progress with
+    it, where the trainer wants to finish that generation and save.
+    """
     global _runner
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     _runner = _Runner(ctx)
 
 

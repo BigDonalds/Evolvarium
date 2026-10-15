@@ -5,6 +5,7 @@ Standard library only, so the dashboard adds no dependencies to the project.
 Endpoints
     GET  /                          dashboard page
     GET  /api/status                live training status and gate state
+    GET  /api/events                training events as they happen (server-sent events)
     GET  /api/curve                 per-generation series for the charts
     GET  /api/generation?n=N        one generation's agents and replays
     GET  /api/generations           which generations can still be replayed
@@ -28,6 +29,7 @@ import numpy as np
 
 from ..persistence import checkpoint, export_model
 from ..telemetry.history import lineage_summaries
+from .stream import EventLog
 
 if TYPE_CHECKING:  # the trainer imports this module, so keep the edge one-way
     from ..trainer import Trainer
@@ -49,6 +51,8 @@ class DashboardServer:
         self.port = port
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self.events = EventLog()
+        self._unsubscribe = None
 
     @property
     def url(self) -> str:
@@ -62,6 +66,7 @@ class DashboardServer:
             print(f"  dashboard unavailable on {self.host}:{self.port}: {error}")
             return False
         self._httpd.daemon_threads = True
+        self._unsubscribe = self.trainer.events.subscribe(self.events.add)
         self._thread = threading.Thread(
             target=self._httpd.serve_forever, name="dashboard", daemon=True
         )
@@ -71,6 +76,10 @@ class DashboardServer:
         return True
 
     def stop(self) -> None:
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+        self.events.close()
         if self._httpd is not None:
             try:
                 self._httpd.shutdown()
@@ -234,6 +243,30 @@ def _make_handler(server: DashboardServer):
             content_type = _CONTENT_TYPES.get(path.suffix, "application/octet-stream")
             self._send(path.read_bytes(), content_type)
 
+        def _stream(self) -> None:
+            """Write training events as they happen, for as long as the page stays."""
+            log = server.events
+            cursor, lost = log.cursor_for(self.headers.get("Last-Event-ID"))
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                # No length is known in advance, so the end of the connection
+                # marks the end of the response.
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(b"retry: 2000\n\n")
+                while not log.closed:
+                    if lost:
+                        self.wfile.write(b"event: resync\ndata: {}\n\n")
+                    cursor, messages, lost = log.read(cursor, timeout=15.0)
+                    # A comment on a quiet stream shows a closed tab as a
+                    # failed write here rather than a thread waiting forever.
+                    text = "".join(messages) if messages else ": idle\n\n"
+                    self.wfile.write(text.encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
+                self.close_connection = True
+
         def _body(self) -> dict:
             """Read and parse the request body.
 
@@ -273,6 +306,8 @@ def _make_handler(server: DashboardServer):
                 self._static(route.lstrip("/"))
             elif route == "/api/status":
                 self._json(server.status())
+            elif route == "/api/events":
+                self._stream()
             elif route == "/api/curve":
                 self._json(server.curve())
             elif route == "/api/generations":

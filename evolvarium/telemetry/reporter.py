@@ -11,6 +11,16 @@ from __future__ import annotations
 import sys
 import time
 
+from ..events import (
+    CheckpointSaved,
+    Event,
+    EventBus,
+    GenerationEvaluated,
+    Held,
+    Note,
+    Resumed,
+    RunFinished,
+)
 from ..evolution.population import GenerationReport
 
 _RESET = "\033[0m"
@@ -45,6 +55,27 @@ class ConsoleReporter:
         self.every = max(1, every)
         self.started = time.time()
         self.rule = _rule_character()
+        self._last_checkpoint: CheckpointSaved | None = None
+
+    def attach(self, events: EventBus) -> None:
+        events.subscribe(
+            self.handle, GenerationEvaluated, Held, Resumed, Note, CheckpointSaved, RunFinished
+        )
+
+    def handle(self, event: Event) -> None:
+        match event:
+            case GenerationEvaluated(report=report):
+                self.generation(report)
+            case Held(generation=generation):
+                self.held(generation)
+            case Resumed(generation=generation, reason=reason):
+                self.resumed(generation, reason)
+            case Note(message=message):
+                self.note(message)
+            case CheckpointSaved():
+                self._last_checkpoint = event
+            case RunFinished():
+                self.finished(event)
 
     def _paint(self, text: str, code: str) -> str:
         return f"{code}{text}{_RESET}" if self.colour else text
@@ -100,6 +131,23 @@ class ConsoleReporter:
 
     def note(self, message: str) -> None:
         print(f"  {message}")
+
+    def finished(self, event: RunFinished) -> None:
+        if event.error:
+            self.note(f"training stopped: {event.error}")
+        elif event.reason == "abandoned":
+            self.note("quit part way through a generation; that generation was not saved")
+        saved = self._last_checkpoint
+        if saved is None:
+            where = "none written"
+        elif saved.generation != event.generation:
+            # After an error or a forced quit the newest checkpoint is older
+            # than the generation the run reached.
+            where = f"{saved.path} (generation {saved.generation})"
+        else:
+            where = saved.path
+        self.farewell(generation=event.generation, episodes=event.episodes,
+                      best=event.best_score, checkpoint=where)
 
     def farewell(self, *, generation: int, episodes: int, best: int, checkpoint: str) -> None:
         elapsed = time.time() - self.started

@@ -1,8 +1,9 @@
 """Training loop.
 
-Owns the population, writes history and checkpoints, and observes the hold gate
-between generations. Runs on its own thread so the dashboard stays responsive
-while evolution proceeds.
+Owns the population and the hold gate, runs generations on its own thread so
+the dashboard stays responsive, and announces what happens on `events`. History
+and checkpoints subscribe as the run's record; the console and the dashboard
+subscribe as views. Nothing here calls any of them directly.
 """
 
 from __future__ import annotations
@@ -15,11 +16,21 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import Config
+from .events import (
+    EventBus,
+    GenerationEvaluated,
+    GenerationStarted,
+    Held,
+    Note,
+    RecordSet,
+    Resumed,
+    RunFinished,
+    RunStarted,
+)
 from .evolution.pool import EvaluationPool, resolve_workers
 from .evolution.population import GenerationReport, Population
 from .persistence import checkpoint
 from .telemetry.history import HistoryStore
-from .telemetry.reporter import ConsoleReporter
 from .web.control import TrainingGate
 
 
@@ -35,7 +46,7 @@ class Trainer:
         run_id: str | None = None,
         seed: int | None = None,
         resume_from: Path | None = None,
-        reporter: ConsoleReporter | None = None,
+        events: EventBus | None = None,
         max_generations: int | None = None,
     ):
         self.config = config
@@ -45,8 +56,9 @@ class Trainer:
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._write_manifest(seed, resume_from)
 
-        self.reporter = reporter or ConsoleReporter()
-        self.history = HistoryStore(self.run_dir, config.history)
+        # Views that subscribe before this point also hear how the run was set
+        # up, such as a resume that cannot continue exactly.
+        self.events = events or EventBus()
         self.gate = TrainingGate(
             viewer_timeout=config.server.viewer_timeout,
             hold_enabled=config.server.hold_when_viewing,
@@ -56,15 +68,24 @@ class Trainer:
             self.population = checkpoint.load(resume_from, config, seed=seed)
             self.resumed_from: str | None = str(resume_from)
             if not checkpoint.restores_exactly(resume_from):
-                self.reporter.note(
+                self.events.publish(Note(
                     "checkpoint has no saved random state; this run will not "
                     "match one that never stopped"
-                )
+                ))
             elif seed is not None:
-                self.reporter.note(f"seed {seed} unused: the checkpoint's random state continues")
+                self.events.publish(
+                    Note(f"seed {seed} unused: the checkpoint's random state continues")
+                )
         else:
             self.population = Population(config, seed=seed)
             self.resumed_from = None
+
+        self.history = HistoryStore(self.run_dir, config.history)
+        self.history.attach(self.events)
+        self.checkpoints = checkpoint.CheckpointWriter(
+            self.population, self.checkpoint_dir, config.checkpoint
+        )
+        self.checkpoints.attach(self.events)
 
         self.workers = resolve_workers(config.evolution.workers)
         self.pool: EvaluationPool | None = None
@@ -75,13 +96,14 @@ class Trainer:
         self.finished = False
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._abandoned = False
         self._last_report: GenerationReport | None = None
 
     def _write_manifest(self, seed: int | None, resume_from: Path | None) -> None:
         """Record what produced this run, before it produces anything.
 
-        Checkpoints appear only on records and every 25 generations, and they do
-        not carry the seed. Two runs that differ only by seed were otherwise
+        Checkpoints appear only on records, every 25 generations and at the end,
+        and they do not carry the seed. Two runs that differ only by seed were otherwise
         distinguishable only by launch order, which parallel launches do not
         guarantee.
         """
@@ -109,11 +131,21 @@ class Trainer:
         self._thread = threading.Thread(target=self._loop, name="trainer", daemon=True)
         self._thread.start()
 
-    def stop(self, timeout: float = 10.0) -> None:
+    def request_stop(self) -> None:
+        """End the run after the generation in progress, without waiting for it."""
         self._stop.set()
         self.gate.stop()
+
+    def stop(self, timeout: float | None = 10.0) -> None:
+        """Stop, wait up to `timeout` for the loop, then shut the workers down.
+
+        A generation still running when the workers go is abandoned, and the run
+        ends without the final checkpoint.
+        """
+        self.request_stop()
         if self._thread is not None:
             self._thread.join(timeout=timeout)
+            self._abandoned = self._thread.is_alive()
         if self.pool is not None:
             self.pool.close()
             self.pool = None
@@ -126,59 +158,59 @@ class Trainer:
     # ------------------------------------------------------------------ loop
 
     def _loop(self) -> None:
+        failure: Exception | None = None
+        reason = "error"
         try:
-            while not self._stop.is_set():
-                if (self.max_generations is not None
-                        and self.population.generation >= self.max_generations):
-                    break
-                self._run_one_generation()
-                self.gate.wait_at_boundary(
-                    self.population.generation,
-                    on_hold=self.reporter.held,
-                    on_resume=self.reporter.resumed,
-                )
+            reason = self._run()
         except Exception as error:  # surfaced rather than dying silently
-            self.reporter.note(f"training stopped: {type(error).__name__}: {error}")
-            raise
+            if self._abandoned:
+                reason = "abandoned"
+            else:
+                failure = error
+
+        population = self.population
+        try:
+            self.events.publish(RunFinished(
+                generation=population.generation,
+                episodes=population.total_episodes,
+                best_score=population.best_ever_score,
+                reason=reason,
+                error=None if failure is None else f"{type(failure).__name__}: {failure}",
+            ))
         finally:
             self.running = False
             self.finished = True
+        if failure is not None:
+            raise failure
+
+    def _run(self) -> str:
+        population = self.population
+        self.events.publish(RunStarted(self.run_id, population.generation, self.resumed_from))
+        while not self._stop.is_set():
+            if self.max_generations is not None and population.generation >= self.max_generations:
+                return "limit"
+            self._run_one_generation()
+            self.gate.wait_at_boundary(
+                population.generation,
+                on_hold=lambda generation: self.events.publish(Held(generation)),
+                on_resume=lambda generation, why: self.events.publish(Resumed(generation, why)),
+            )
+        return "stopped"
 
     def _run_one_generation(self) -> None:
-        report = self.population.run_generation(record=True, pool=self.pool)
+        population = self.population
+        self.events.publish(GenerationStarted(population.generation))
+        report = population.run_generation(record=True, pool=self.pool)
         self._last_report = report
 
-        # Replays were packed wherever the genome was scored, so this is a cheap
-        # assembly step rather than a second pass over the episodes.
-        agents = []
-        for member in report.evaluated:
-            payload = member.summary()
-            payload["replay"] = member.replay
-            agents.append(payload)
-
-        limit = self.config.history.agents_per_generation
-        agents.sort(key=lambda a: a["fitness"], reverse=True)
-        if limit > 0:
-            agents = agents[:limit]
-
-        best_genome = self.population.best_ever_genome
-        genome_list = [float(v) for v in best_genome] if best_genome is not None else None
-        self.history.append(report, agents, genome_list)
-
-        self.reporter.generation(report)
-        self._maybe_checkpoint(report)
-
-    def _maybe_checkpoint(self, report: GenerationReport) -> None:
-        every = self.config.checkpoint.save_every
-        generation = self.population.generation
-        if every > 0 and generation % every == 0:
-            checkpoint.save(self.population, self.checkpoint_dir / f"gen_{generation:06d}.npz")
-            checkpoint.prune(self.checkpoint_dir, self.config.checkpoint.keep_last)
+        self.events.publish(GenerationEvaluated(report, population.best_ever_genome))
         if report.record:
-            self.save_latest()
+            self.events.publish(RecordSet(
+                report.generation, population.best_ever_score, population.best_ever_fitness
+            ))
 
     def save_latest(self) -> checkpoint.CheckpointInfo:
-        return checkpoint.save(self.population, self.checkpoint_dir / "latest.npz")
+        return self.checkpoints.save_latest()
 
     # ------------------------------------------------------------------ status
 

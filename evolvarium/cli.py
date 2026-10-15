@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import sys
@@ -10,6 +11,7 @@ import webbrowser
 from pathlib import Path
 
 from .config import CONFIG, Config
+from .events import EventBus, Note
 from .evolution.pool import resolve_workers
 from .features import available_specs
 from .held_out import (
@@ -108,13 +110,15 @@ def command_train(args: argparse.Namespace) -> int:
             print(f"  no checkpoint to resume from ({args.resume}); starting a new run")
             resume_from = None
 
+    events = EventBus()
     reporter = ConsoleReporter(every=args.report_every)
+    reporter.attach(events)
     try:
         trainer = Trainer(
             config,
             seed=args.seed,
             resume_from=resume_from,
-            reporter=reporter,
+            events=events,
             max_generations=args.generations,
         )
     except checkpoint.CheckpointMismatch as error:
@@ -137,22 +141,29 @@ def command_train(args: argparse.Namespace) -> int:
     if served and args.open:
         webbrowser.open(server.url)
 
+    # The run's final checkpoint and the closing summary both come from the
+    # trainer thread as it finishes, so this side only decides when to stop.
     trainer.start()
     try:
         trainer.join()
     except KeyboardInterrupt:
         print()
-        reporter.note("interrupted, finishing the current generation")
-        trainer.stop()
+        events.publish(Note(
+            "interrupted, finishing the current generation (Ctrl+C again to drop it)"
+        ))
+        trainer.request_stop()
+        try:
+            trainer.join()
+        except KeyboardInterrupt:
+            trainer.stop(timeout=0)
+            # The trainer ends once the workers finish the genomes they are
+            # scoring. A third Ctrl+C stops waiting for it here, though the
+            # process still lets the workers finish as it exits.
+            with contextlib.suppress(KeyboardInterrupt):
+                trainer.join()
 
-    info = trainer.save_latest()
+    trainer.stop()
     server.stop()
-    reporter.farewell(
-        generation=trainer.population.generation,
-        episodes=trainer.population.total_episodes,
-        best=trainer.population.best_ever_score,
-        checkpoint=str(info.path),
-    )
     return 0
 
 

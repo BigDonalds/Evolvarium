@@ -38,6 +38,15 @@ python -m pytest
 record in `tests/data`. It takes under a minute. CI runs both on Linux, Windows,
 Windows on ARM and macOS.
 
+Ctrl+C stops training after the generation in progress and saves it. A second
+Ctrl+C drops that generation and quits. The dashboard follows the run through
+`GET /api/events`, a server-sent event stream of each generation, record, hold
+and checkpoint, which any other client can read as well:
+
+```bash
+curl -N http://127.0.0.1:8765/api/events
+```
+
 `python -m evolvarium --help` lists the other commands. The full reference for
 the baseline is Snake-AI's
 [COMMANDS.md](https://github.com/BigDonalds/Snake-AI/blob/v0.2.0/COMMANDS.md),

@@ -1,7 +1,7 @@
 /* evolvarium dashboard
    Vanilla ES modules-free script: no build step, no dependencies.
 
-   Two behaviours drive most of the design.
+   Three behaviours drive most of the design.
 
    Presence: the trainer holds at a generation boundary while this page is open,
    so a generation cannot be replaced before it has been looked at. That hold is
@@ -10,15 +10,23 @@
 
    Pinning: selecting a generation detaches the view from the live edge. New
    generations keep arriving and the scrubber range grows, but the displayed
-   generation does not change until "Follow latest" is turned back on. */
+   generation does not change until "Follow latest" is turned back on.
+
+   Events: the trainer announces each generation, record, hold and note on
+   /api/events as it happens, and the page reacts to those. Status is still
+   polled, slowly, for the clocks and rates that change all the time, and at the
+   old rate whenever the stream is down. */
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const HEARTBEAT_MS = 3000;
-const STATUS_MS = 1200;
+const STATUS_MS = 1200;        // polling while the event stream is down
+const STATUS_LIVE_MS = 5000;   // polling while events arrive on their own
 const TICK_MS = 90;
 
 const state = {
   status: null,
+  live: false,           // event stream connected
+  curve: null,           // chart series, extended as generations arrive
   generation: null,      // loaded GenerationRecord
   following: true,
   pinned: null,          // generation number when not following
@@ -180,9 +188,23 @@ function escape(text) {
 
 async function loadCurve() {
   try {
-    const curve = await getJSON("/api/curve");
-    renderChart(curve);
+    state.curve = await getJSON("/api/curve");
+    renderChart(state.curve);
   } catch { /* chart is optional */ }
+}
+
+function extendCurve(summary) {
+  const curve = state.curve;
+  if (!curve) return;
+  const n = curve.generation.length;
+  const last = n ? curve.generation[n - 1] : null;
+  if (last != null && summary.generation <= last) return;
+  if (last != null && summary.generation > last + 1) {
+    // A generation finished between loading the curve and the stream opening.
+    loadCurve();
+    return;
+  }
+  for (const key of Object.keys(curve)) curve[key].push(summary[key] ?? 0);
 }
 
 function renderChart(curve) {
@@ -317,7 +339,7 @@ async function loadGeneration(number) {
   renderGenerationSummary(data.summary);
   renderGrid();
   syncScrubber();
-  loadCurve();
+  if (state.curve) renderChart(state.curve);
 }
 
 function renderGenerationSummary(summary) {
@@ -665,6 +687,48 @@ function bind() {
   });
 }
 
+/* ---------------------------------------------------------------- events */
+
+let refreshTimer = null;
+
+function scheduleRefresh() {
+  // A fast run can finish several generations a second; one refresh covers
+  // all of them.
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    pollStatus();
+    if (state.curve) renderChart(state.curve);
+  }, 150);
+}
+
+function listen() {
+  if (!window.EventSource) return;
+  const source = new EventSource("/api/events");
+  const on = (kind, handler) =>
+    source.addEventListener(kind, (e) => handler(JSON.parse(e.data)));
+
+  source.addEventListener("open", () => { state.live = true; });
+  source.addEventListener("error", () => { state.live = false; });
+
+  on("generation", (event) => { extendCurve(event.summary); scheduleRefresh(); });
+  on("record", (event) =>
+    toast(`New best score ${event.score} at generation ${event.generation}`, "good"));
+  on("held", scheduleRefresh);
+  on("resumed", scheduleRefresh);
+  on("note", (event) => toast(event.message));
+  on("run_finished", (event) => {
+    scheduleRefresh();
+    if (event.error) toast(`Training stopped: ${event.error}`, "bad");
+  });
+  // Events were missed, so rebuild from the regular endpoints.
+  on("resync", () => { loadCurve(); scheduleRefresh(); });
+}
+
+function statusLoop() {
+  pollStatus().finally(() => setTimeout(statusLoop, state.live ? STATUS_LIVE_MS : STATUS_MS));
+}
+
 function heartbeat() {
   // Presence lease. The trainer holds only while these keep arriving, so a
   // closed tab releases the hold instead of stalling the run indefinitely.
@@ -674,10 +738,10 @@ function heartbeat() {
 function init() {
   bind();
   heartbeat();
-  pollStatus();
+  listen();
   loadCurve();
+  statusLoop();
   setInterval(heartbeat, HEARTBEAT_MS);
-  setInterval(pollStatus, STATUS_MS);
   requestAnimationFrame(tick);
 }
 

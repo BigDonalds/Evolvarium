@@ -30,7 +30,15 @@ from pathlib import Path
 
 import numpy as np
 
-from ..config import Config
+from ..config import CheckpointConfig, Config
+from ..events import (
+    CheckpointSaved,
+    Event,
+    EventBus,
+    GenerationEvaluated,
+    RecordSet,
+    RunFinished,
+)
 from ..evolution import speciation
 from ..evolution.individual import Individual, id_number, reserve_ids
 from ..evolution.population import Population
@@ -305,3 +313,52 @@ def prune(directory: Path, keep_last: int) -> int:
             except OSError:
                 pass
     return removed
+
+
+class CheckpointWriter:
+    """Saves checkpoints as the trainer announces generations.
+
+    A numbered checkpoint every `save_every` generations, pruned to the newest
+    `keep_last`, and `latest.npz` on each record and once more when the run ends.
+    All of it happens on the trainer thread between generations, so a checkpoint
+    never catches a population part way through one.
+    """
+
+    def __init__(self, population: Population, directory: Path, config: CheckpointConfig):
+        self.population = population
+        self.directory = directory
+        self.config = config
+        self._events: EventBus | None = None
+        self._latest_generation: int | None = None
+
+    def attach(self, events: EventBus) -> None:
+        self._events = events
+        events.subscribe(
+            self.handle, GenerationEvaluated, RecordSet, RunFinished, keeps_record=True
+        )
+
+    def handle(self, event: Event) -> None:
+        match event:
+            case GenerationEvaluated():
+                every = self.config.save_every
+                generation = self.population.generation
+                if every > 0 and generation % every == 0:
+                    self._save(f"gen_{generation:06d}.npz", "periodic")
+                    prune(self.directory, self.config.keep_last)
+            case RecordSet():
+                self.save_latest("record")
+            case RunFinished(reason="limit" | "stopped"):
+                # A run that set a record in its last generation already has it.
+                if self._latest_generation != self.population.generation:
+                    self.save_latest("final")
+
+    def save_latest(self, trigger: str = "final") -> CheckpointInfo:
+        info = self._save("latest.npz", trigger)
+        self._latest_generation = info.generation
+        return info
+
+    def _save(self, name: str, trigger: str) -> CheckpointInfo:
+        info = save(self.population, self.directory / name)
+        if self._events is not None:
+            self._events.publish(CheckpointSaved(str(info.path), info.generation, trigger))
+        return info

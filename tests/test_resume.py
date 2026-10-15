@@ -105,7 +105,7 @@ def test_resumed_population_matches_an_uninterrupted_one(tmp_path, speciation):
 
 
 def test_resumed_trainer_matches_an_uninterrupted_one(tmp_path):
-    """Same check through the trainer, which also writes history and checkpoints."""
+    """Same check through the trainer, resuming from the checkpoint the run left."""
     config = make_config(tmp_path)
 
     def run(trainer: Trainer) -> Trainer:
@@ -117,8 +117,8 @@ def test_resumed_trainer_matches_an_uninterrupted_one(tmp_path):
     straight = run(Trainer(config, run_id="straight", seed=5, max_generations=TOTAL))
 
     first = run(Trainer(config, run_id="first", seed=5, max_generations=SPLIT))
-    saved = first.save_latest()
-    resumed = run(Trainer(config, run_id="resumed", resume_from=saved.path,
+    saved = first.checkpoint_dir / "latest.npz"
+    resumed = run(Trainer(config, run_id="resumed", resume_from=saved,
                           max_generations=TOTAL))
 
     assert state_record(resumed.population) == state_record(straight.population)

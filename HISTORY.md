@@ -10,6 +10,63 @@ directly.
 
 ---
 
+## Training events - the loop announces, everything else listens
+
+The trainer used to call everything that cared about a generation itself. From
+inside the loop it built the history record, decided when to checkpoint and told
+the console what to print. The dashboard was never told anything: it asked for
+the status and the generation list every 1.2 seconds and fetched the whole chart
+series again for each new generation. Every new view meant another call wired
+into the loop.
+
+The trainer now publishes events as the run proceeds: run started, generation
+started, generation evaluated, record set, held, resumed, checkpoint saved, a
+note, and run finished with the reason it ended. It no longer refers to history,
+checkpoints, the console or the dashboard. Each of them subscribes to the events
+it needs, in `evolvarium/events.py`.
+
+Subscribers are of two kinds. History and checkpoints keep the run's record.
+They hear each event first, so the console and the dashboard only hear about a
+generation once it is written down. If one of them fails, the run stops, since a
+run that carries on without its record leaves nothing to resume from. The
+console and the dashboard are views. A view that raises is dropped, the failure
+is announced as a note, and training carries on. Handlers run on the trainer
+thread and may not draw from the population's random generator, so a run evolves
+the same with or without listeners. The held-out replay and the resume tests
+pass unchanged, and the trainer's resume test now resumes from the checkpoint
+the run left behind by itself rather than one saved afterwards.
+
+**Stopping.** After a Ctrl+C the command line used to write the last checkpoint
+from the main thread. `stop()` waited 10 seconds for the generation in progress
+and then closed the workers regardless, so a slow generation could be saved part
+way through, after it had already drawn its seeds. A checkpoint taken there does
+not continue the run it came from. The workers also received the Ctrl+C
+themselves, since the console sends it to every process attached to it, and
+could die mid-generation. Workers now ignore it. The first Ctrl+C asks the
+trainer to stop after the current generation, and the trainer saves
+`latest.npz` on its own thread at that boundary before printing the closing
+summary. A second closes the workers under the generation. The run ends as
+abandoned, nothing is saved from it, and the summary names the last checkpoint
+that was written and its generation.
+
+**Dashboard.** `GET /api/events` streams the events as server-sent events. Each
+one is formatted once into a log of the last 1,024, which every open page reads
+at its own pace, so the trainer never waits on a browser. Ids carry the server's
+start time. A page that reconnects continues after the last id it saw, and when
+the log no longer reaches back that far, or the id came from an earlier server,
+it is told to reload from the regular endpoints instead. The page extends the
+chart from each generation event rather than fetching the series again, shows a
+record or a note as it happens, and polls status every 5 seconds for the clocks
+and rates. While the stream is down it polls at the old 1.2 seconds. A quiet
+stream sends a comment every 15 seconds, so a closed tab shows up as a failed
+write rather than a thread left waiting.
+
+**Not announced yet.** Automatic adjustments. The only ones so far are the
+mutation-rate schedule, which moves on every stagnant generation, and the drift
+of the speciation threshold. Announcing those would fill the feed with routine,
+so they get an event once the engine's adjustments are decisions rather than
+schedules.
+
 ## A model file of its own - JSON export and a player that needs nothing installed
 
 An exported model used to be a `.pt` file, which takes PyTorch to write and to

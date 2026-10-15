@@ -26,6 +26,7 @@ from collections import OrderedDict
 from pathlib import Path, PureWindowsPath
 
 from ..config import HistoryConfig
+from ..events import EventBus, GenerationEvaluated
 from ..evolution.individual import Individual
 from ..evolution.population import GenerationReport
 from ..game.engine import EpisodeResult
@@ -144,6 +145,28 @@ class HistoryStore:
         return self.replay_dir / f"gen_{generation:06d}.json.gz"
 
     # ------------------------------------------------------------------ writing
+
+    def attach(self, events: EventBus) -> None:
+        events.subscribe(self.record_generation, GenerationEvaluated, keeps_record=True)
+
+    def record_generation(self, event: GenerationEvaluated) -> None:
+        report = event.report
+
+        # Replays were packed wherever the genome was scored, so this is a cheap
+        # assembly step rather than a second pass over the episodes.
+        agents = []
+        for member in report.evaluated:
+            payload = member.summary()
+            payload["replay"] = member.replay
+            agents.append(payload)
+
+        limit = self.config.agents_per_generation
+        agents.sort(key=lambda a: a["fitness"], reverse=True)
+        if limit > 0:
+            agents = agents[:limit]
+
+        genome = event.best_genome
+        self.append(report, agents, None if genome is None else [float(v) for v in genome])
 
     def append(self, report: GenerationReport, agents: list[dict],
                best_genome: list[float] | None = None) -> None:
