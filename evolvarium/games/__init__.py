@@ -4,14 +4,18 @@ A built-in game is named by its short name. Any other game is named
 "package.module:Class", and is imported from wherever Python finds that module,
 so a game can live outside this package. Worker processes import it the same
 way, which needs the module importable from a fresh interpreter too.
+
+A game's settings are named beside the engine's, so a game cannot give a
+setting the name of one of the engine's sections.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 
-from ..config import Config
-from ..contract import DIRECTIONS, Game
+from ..config import SECTIONS, Config
+from ..contract import DIRECTIONS, Game, closest
 
 _BUILT_IN = {
     "snake": "evolvarium.games.snake:SnakeGame",
@@ -19,7 +23,7 @@ _BUILT_IN = {
 
 
 class UnknownGame(ValueError):
-    """A game name that names no game."""
+    """A name that names no game the engine can train."""
 
 
 def names() -> list[str]:
@@ -31,7 +35,9 @@ def get(name: str) -> type[Game]:
     reference = _BUILT_IN.get(name, name)
     module_name, _, class_name = reference.partition(":")
     if not class_name:
-        raise UnknownGame(f"unknown game {name!r}; built in: {', '.join(names())}")
+        match = closest(name, names())
+        hint = f"; did you mean {match!r}?" if match else ""
+        raise UnknownGame(f"unknown game {name!r}; built in: {', '.join(names())}{hint}")
     try:
         module = importlib.import_module(module_name)
     except ImportError as error:
@@ -42,6 +48,13 @@ def get(name: str) -> type[Game]:
     if cls.direction not in DIRECTIONS:
         raise UnknownGame(
             f"{reference} has direction {cls.direction!r}; it must be one of {DIRECTIONS}"
+        )
+    if not dataclasses.is_dataclass(cls.Settings):
+        raise UnknownGame(f"{reference} has settings that are not a dataclass")
+    taken = sorted({f.name for f in dataclasses.fields(cls.Settings)} & set(SECTIONS))
+    if taken:
+        raise UnknownGame(
+            f"{reference} has a setting named {taken[0]!r}, which the engine's settings use"
         )
     return cls
 

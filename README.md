@@ -38,6 +38,20 @@ python -m pytest
 record in `tests/data`. It takes under a minute. CI runs both on Linux, Windows,
 Windows on ARM and macOS.
 
+Every setting has a name. A game's are named by their path in its settings,
+such as `board.width` for Snake, and the engine's by section, such as
+`evolution.population_size`. `python -m evolvarium settings` lists them with
+their values and the choices each one allows, and `train` sets any of them:
+
+```bash
+python -m evolvarium train --set board.width=12 network.hidden_layers=32,16 network.hidden_activations=relu,tanh
+```
+
+A run checks its settings before it starts and reports every problem at once: a
+name that does not exist, with the closest one that does, a value of the wrong
+type, out of range or at odds with another setting, and a setting given by name
+that the others leave without effect.
+
 Ctrl+C stops training after the generation in progress and saves it. A second
 Ctrl+C drops that generation and quits. The dashboard follows the run through
 `GET /api/events`, a server-sent event stream of each generation, record, hold
@@ -50,7 +64,8 @@ curl -N http://127.0.0.1:8765/api/events
 `python -m evolvarium --help` lists the other commands. The full reference for
 the baseline is Snake-AI's
 [COMMANDS.md](https://github.com/BigDonalds/Snake-AI/blob/v0.2.0/COMMANDS.md),
-reading `snake_ai` there as `evolvarium`.
+reading `snake_ai` there as `evolvarium`. Snake's own flags there, such as
+`--board` and `--spec`, are settings now, set with `--set`.
 
 ## Games
 
@@ -62,9 +77,13 @@ ended and whether a higher or a lower score is better. The engine sizes the
 network from that and turns its outputs back into the game's own actions.
 
 Snake, in `evolvarium/games/snake`, is the one built in. Any other game is named
-`module:Class` in the configuration's `game` and imported from wherever Python
-finds it. `tests/test_contract.py` trains one with two agents and a score that
-is better lower. The command line still trains Snake only.
+`module:Class` and imported from wherever Python finds it, so
+`train --game package.module:Class` trains it and
+`settings --game package.module:Class` lists its settings. A game can declare
+the values a setting allows, check its settings against each other, and name
+the ones that others leave without effect, and the run uses all three before it
+starts. `tests/test_contract.py` trains one with two agents and a score that is
+better lower.
 
 ## Exported models
 

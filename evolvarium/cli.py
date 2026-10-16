@@ -10,12 +10,11 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from . import games
+from . import games, settings
 from .config import CONFIG, Config
-from .contract import override, settings_dict
+from .contract import settings_dict
 from .events import EventBus, Note
 from .evolution.pool import resolve_workers
-from .games.snake.features import available_specs
 from .held_out import (
     TargetError,
     candidates_from,
@@ -26,10 +25,34 @@ from .held_out import (
     run_context,
 )
 from .persistence import checkpoint, export_model
+from .settings import SettingsError
 from .telemetry.history import lineage_summaries
 from .telemetry.reporter import ConsoleReporter
 from .trainer import Trainer
 from .web.server import DashboardServer
+
+# Flags for the settings a sweep changes most. Each is the same as --set on the
+# setting it names.
+SHORTHANDS = {
+    "--population": ("evolution.population_size", int, "genomes in each generation"),
+    "--episodes": ("evolution.evaluation_episodes", int, "evaluation episodes per genome"),
+    "--tournament": ("evolution.tournament_size", int,
+                     "tournament size; higher is stronger selection pressure"),
+    "--elites": ("evolution.elite_count", int,
+                 "genomes carried forward unchanged each generation"),
+    "--immigrants": ("evolution.immigrant_count", int,
+                     "fresh random genomes injected each generation"),
+    "--mutation-rate": ("evolution.mutation_rate", float,
+                        "share of genes perturbed in an offspring"),
+    "--mutation-strength": ("evolution.mutation_strength", float, "size of each perturbation"),
+    "--max-mutation-rate": ("evolution.max_mutation_rate", float,
+                            "ceiling the mutation rate widens to while the best score stalls"),
+    "--crossover-rate": ("evolution.crossover_rate", float,
+                         "share of offspring built from two parents"),
+    "--workers": ("evolution.workers", int,
+                  "evaluation worker processes; 0 uses every core but one, 1 is serial"),
+    "--port": ("server.port", int, "dashboard port"),
+}
 
 
 def _prepare_console() -> None:
@@ -45,52 +68,42 @@ def _prepare_console() -> None:
             pass
 
 
-def _apply_overrides(config: Config, args: argparse.Namespace) -> Config:
-    sections: dict = {}
-    # Every knob that shapes the search, so a sweep needs no config edits.
-    evolution_flags = {
-        "population_size": args.population,
-        "evaluation_episodes": args.episodes,
-        "tournament_size": args.tournament,
-        "elite_count": args.elites,
-        "immigrant_count": args.immigrants,
-        "mutation_rate": args.mutation_rate,
-        "mutation_strength": args.mutation_strength,
-        "min_mutation_rate": args.min_mutation_rate,
-        "max_mutation_rate": args.max_mutation_rate,
-        "crossover_rate": args.crossover_rate,
-        "workers": args.workers,
-    }
-    changes = {k: v for k, v in evolution_flags.items() if v is not None}
-    if args.no_speciation:
-        changes["use_speciation"] = False
-    if changes:
-        sections["evolution"] = dataclasses.replace(config.evolution, **changes)
+def _assignment(text: str) -> tuple[str, str]:
+    name, equals, value = text.partition("=")
+    if not equals or not name.strip():
+        raise argparse.ArgumentTypeError(f"{text!r} is not NAME=VALUE")
+    return name.strip(), value.strip()
 
-    # Snake's own settings, by their path inside its settings.
-    snake_flags = {
-        "board.width": args.board,
-        "board.height": args.board,
-        "features.spec": args.spec,
-        "fitness.avoidable_death_fraction": args.avoidable_penalty,
-        "fitness.death_fraction": args.death_penalty,
-    }
-    changes = {k: v for k, v in snake_flags.items() if v is not None}
-    if changes:
-        settings = games.settings_for(config)
-        for path, value in changes.items():
-            settings = override(settings, path, value)
-        sections["settings"] = settings
 
-    if args.port is not None or args.no_hold:
-        changes = {}
-        if args.port is not None:
-            changes["port"] = args.port
-        if args.no_hold:
-            changes["hold_when_viewing"] = False
-        sections["server"] = dataclasses.replace(config.server, **changes)
+def _game_config(game: str | None) -> Config:
+    if game is None:
+        return CONFIG
+    return dataclasses.replace(CONFIG, game=game, settings=None)
 
-    return config.with_overrides(**sections) if sections else config
+
+def _configure(args: argparse.Namespace) -> Config:
+    """The configuration the train command asks for, refused if it cannot train as asked."""
+    assignments = []
+    for flag, (name, _, _) in SHORTHANDS.items():
+        value = getattr(args, flag[2:].replace("-", "_"))
+        if value is not None:
+            assignments.append((name, value))
+    if args.no_hold:
+        assignments.append(("server.hold_when_viewing", False))
+    assignments.extend(args.set or [])
+
+    config = settings.apply(_game_config(args.game), assignments)
+    problems = []
+    try:
+        settings.check(config, named=[name for name, _ in assignments],
+                       dashboard=not args.headless)
+    except SettingsError as error:
+        problems = error.problems
+    if args.open and args.headless:
+        problems.append("--open has no effect with --headless, which starts no dashboard")
+    if problems:
+        raise SettingsError(problems)
+    return config
 
 
 def _latest_checkpoint(runs_dir: Path) -> Path | None:
@@ -99,7 +112,13 @@ def _latest_checkpoint(runs_dir: Path) -> Path | None:
 
 
 def command_train(args: argparse.Namespace) -> int:
-    config = _apply_overrides(CONFIG, args)
+    try:
+        config = _configure(args)
+    except (SettingsError, games.UnknownGame) as error:
+        print("  cannot train:")
+        for problem in getattr(error, "problems", [str(error)]):
+            print(f"    {problem}")
+        return 1
 
     resume_from: Path | None = None
     if args.resume:
@@ -196,19 +215,20 @@ def command_inspect(args: argparse.Namespace) -> int:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         recorded = manifest.get("config") or {}
         print(f"  seed          {manifest.get('seed')}")
-        evolution = recorded.get("evolution", {})
-        tuned = {k: v for k, v in evolution.items()
-                 if v != getattr(CONFIG.evolution, k, object())}
+        # Settings the engine no longer has are left out.
+        current = settings_dict(CONFIG.evolution)
+        tuned = {k: v for k, v in recorded.get("evolution", {}).items()
+                 if k in current and v != current[k]}
         print(f"  evolution     {tuned or 'defaults'}")
 
-    settings = checkpoint.saved_settings(meta, recorded)
+    saved = checkpoint.saved_settings(meta, recorded)
     try:
         defaults = settings_dict(games.get(info.game).Settings())
     except games.UnknownGame:
         defaults = {}
     # Through JSON, so tuples compare equal to the lists a checkpoint stores.
-    tuned = _changed(settings, json.loads(json.dumps(defaults, default=str)))
-    if settings:
+    tuned = _changed(saved, json.loads(json.dumps(defaults, default=str)))
+    if saved:
         print(f"  settings      {tuned or 'defaults'}")
     else:
         print("  settings      not recorded (checkpoint predates config capture)")
@@ -407,9 +427,24 @@ def command_profile(args: argparse.Namespace) -> int:
     return 0
 
 
-def command_specs(_: argparse.Namespace) -> int:
-    for name, size in available_specs().items():
-        print(f"  {name:<20} {size} inputs")
+def command_settings(args: argparse.Namespace) -> int:
+    try:
+        config = games.resolve(_game_config(args.game))
+    except games.UnknownGame as error:
+        print(f"  {error}")
+        return 1
+    current = settings.values(config)
+    allowed = settings.choices(config.game)
+    width = max(map(len, current))
+    group = None
+    for name, value in current.items():
+        if group is not None and name.partition(".")[0] != group:
+            print()
+        group = name.partition(".")[0]
+        line = f"  {name:<{width}}  {settings.show(value)}"
+        if name in allowed:
+            line += f"  ({', '.join(map(str, allowed[name]))})"
+        print(line)
     return 0
 
 
@@ -420,46 +455,24 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     train = sub.add_parser("train", help="run evolution with the live dashboard")
+    train.add_argument("--game", default=None,
+                       help=f"a built-in game or package.module:Class, default {CONFIG.game}")
+    train.add_argument(
+        "--set", action="extend", nargs="+", type=_assignment, metavar="NAME=VALUE",
+        help="set any setting of the game or the engine by name, such as board.width=12 "
+             "or network.hidden_layers=32,16; the settings command lists them",
+    )
     train.add_argument("--generations", type=int, default=None, help="stop after this many")
-    train.add_argument("--population", type=int, default=None)
-    train.add_argument("--episodes", type=int, default=None, help="evaluation episodes per genome")
-    train.add_argument("--board", type=int, default=None,
-                       help="snake: square board size in cells")
-    train.add_argument("--spec", default=None, choices=sorted(available_specs()),
-                       help="snake: state encoding to train under")
-    train.add_argument("--tournament", type=int, default=None,
-                       help="tournament size; higher is stronger selection pressure")
-    train.add_argument("--elites", type=int, default=None,
-                       help="genomes carried forward unchanged each generation")
-    train.add_argument("--immigrants", type=int, default=None,
-                       help="fresh random genomes injected each generation")
-    train.add_argument("--mutation-rate", type=float, default=None,
-                       help="share of genes perturbed in an offspring")
-    train.add_argument("--mutation-strength", type=float, default=None,
-                       help="size of each perturbation")
-    train.add_argument("--min-mutation-rate", type=float, default=None,
-                       help="floor the adaptive mutation schedule can fall to")
-    train.add_argument("--max-mutation-rate", type=float, default=None,
-                       help="ceiling the schedule escalates to while stagnating")
-    train.add_argument("--crossover-rate", type=float, default=None,
-                       help="share of offspring built from two parents")
-    train.add_argument("--avoidable-penalty", type=float, default=None,
-                       help="snake: cost of dying when a safe move existed, as a "
-                            "fraction of food earned")
-    train.add_argument("--death-penalty", type=float, default=None,
-                       help="snake: cost of dying at all, as a fraction of food earned; "
-                            "running out the clock is exempt")
-    train.add_argument("--workers", type=int, default=None,
-                       help="evaluation worker processes; 0 uses every core but one, 1 is serial")
+    for flag, (name, kind, about) in SHORTHANDS.items():
+        train.add_argument(flag, type=kind, default=None, help=f"{about} ({name})")
     train.add_argument("--seed", type=int, default=None)
-    train.add_argument("--port", type=int, default=None)
     train.add_argument("--resume", nargs="?", const="auto", default=None,
                        help="resume from a checkpoint path, or 'auto' for the newest")
     train.add_argument("--report-every", type=int, default=1)
     train.add_argument("--headless", action="store_true", help="do not start the dashboard")
     train.add_argument("--no-hold", action="store_true",
-                       help="never pause for the dashboard between generations")
-    train.add_argument("--no-speciation", action="store_true")
+                       help="never pause for the dashboard between generations "
+                            "(server.hold_when_viewing=false)")
     train.add_argument("--open", action="store_true", help="open the dashboard in a browser")
     train.set_defaults(func=command_train)
 
@@ -528,8 +541,12 @@ def build_parser() -> argparse.ArgumentParser:
                          help="also write the measurements to this file")
     profile.set_defaults(func=command_profile)
 
-    specs = sub.add_parser("specs", help="list Snake's feature encodings")
-    specs.set_defaults(func=command_specs)
+    listing = sub.add_parser(
+        "settings", help="list every setting a game trains under, its value and its choices"
+    )
+    listing.add_argument("--game", default=None,
+                         help=f"a built-in game or package.module:Class, default {CONFIG.game}")
+    listing.set_defaults(func=command_settings)
 
     return parser
 

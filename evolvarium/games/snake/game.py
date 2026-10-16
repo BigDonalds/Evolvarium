@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import dataclasses
 
-from ...contract import Actions, Choice, Game, Milestone, Observation, load_settings
+from ...contract import (
+    Actions,
+    Choice,
+    Game,
+    Milestone,
+    Observation,
+    Problems,
+    load_settings,
+)
 from .board import Turn
 from .engine import Episode
-from .features import FeatureSpec, available_specs
+from .features import FLOOD_FILL_SPECS, HORIZON_SPECS, FeatureSpec, available_specs
 from .fitness import evaluate
 from .replay import pack_replay
 from .settings import BoardConfig, EpisodeConfig, FeatureConfig, FitnessConfig, SnakeSettings
@@ -92,6 +100,67 @@ class SnakeGame(Game):
 
     def encoder(self):
         return self.spec._encode
+
+    # -------------------------------------------------------------- settings
+
+    @classmethod
+    def setting_choices(cls) -> dict[str, tuple]:
+        return {"features.spec": tuple(available_specs())}
+
+    @classmethod
+    def setting_problems(cls, settings: SnakeSettings) -> list[str]:
+        board, episode, features = settings.board, settings.episode, settings.features
+        problems = Problems()
+        problems.at_least("board.width", board.width, 2)
+        problems.at_least("board.height", board.height, 2)
+        problems.at_least("board.initial_length", board.initial_length, 1)
+        # The snake starts heading up from the centre cell, its body straight below.
+        room = board.height - board.height // 2
+        if board.height >= 2 and board.initial_length > room:
+            problems.append(
+                f"board.initial_length of {board.initial_length} does not fit below the "
+                f"centre of a board {board.height} high, which has room for {room}"
+            )
+        problems.at_least("episode.starvation_limit", episode.starvation_limit, 1)
+        problems.at_least("episode.starvation_per_segment", episode.starvation_per_segment, 0)
+        problems.at_least("episode.max_steps", episode.max_steps, 1)
+        if features.spec in FLOOD_FILL_SPECS:
+            problems.at_least("features.flood_fill_limit", features.flood_fill_limit, 1)
+        if features.spec in HORIZON_SPECS:
+            problems.at_least("features.space_horizon", features.space_horizon, 1)
+        # The formula gives every weight its sign, so a negative one would turn
+        # a reward into a penalty or the reverse.
+        fitness = settings.fitness
+        for field in dataclasses.fields(fitness):
+            if field.name != "food_exponent":
+                problems.at_least(f"fitness.{field.name}", getattr(fitness, field.name), 0)
+        # At 0, a game that never ate would earn the whole food reward.
+        if fitness.food_reward:
+            problems.above("fitness.food_exponent", fitness.food_exponent, 0)
+        return problems
+
+    @classmethod
+    def unused_settings(cls, settings: SnakeSettings) -> dict[str, str]:
+        spec, fitness = settings.features.spec, settings.fitness
+        unused = {}
+        if spec not in FLOOD_FILL_SPECS:
+            unused["features.flood_fill_limit"] = (
+                f"features.spec is {spec} and only {', '.join(FLOOD_FILL_SPECS)} reads it"
+            )
+        if spec not in HORIZON_SPECS:
+            unused["features.space_horizon"] = (
+                f"features.spec is {spec}, which measures space without looking ahead"
+            )
+        # Each of these shapes a term that its weight switches off at 0.
+        for setting, weight in (
+            ("food_exponent", "food_reward"),
+            ("survival_cap", "survival_per_step"),
+            ("approach_cap", "approach_reward"),
+            ("early_death_steps", "early_death_penalty"),
+        ):
+            if getattr(fitness, weight) == 0:
+                unused[f"fitness.{setting}"] = f"fitness.{weight} is 0"
+        return unused
 
     # -------------------------------------------------------------- model file
 

@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import numpy as np
 
+BLENDS = ("weighted_average", "uniform", "single_point", "layer_uniform")
+MUTATIONS = ("gaussian", "polynomial")
+
 
 def blend(parent_a: np.ndarray, parent_b: np.ndarray, rng: np.random.Generator,
           method: str = "weighted_average") -> np.ndarray:

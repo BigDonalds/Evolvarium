@@ -233,7 +233,7 @@ class Population:
     def _current_mutation_rate(self) -> float:
         evo = self.config.evolution
         widened = evo.mutation_rate + self.stagnation * evo.stagnation_step
-        return float(np.clip(widened, evo.min_mutation_rate, evo.max_mutation_rate))
+        return float(min(widened, evo.max_mutation_rate))
 
     def _breed(self, ranked: list[Individual], mutation_rate: float) -> list[Individual]:
         evo = self.config.evolution

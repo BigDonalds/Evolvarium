@@ -11,6 +11,8 @@ import numpy as np
 
 from .individual import Individual
 
+METHODS = ("tournament", "rank", "roulette")
+
 
 def tournament(population: list[Individual], rng: np.random.Generator, size: int) -> Individual:
     size = max(2, min(size, len(population)))

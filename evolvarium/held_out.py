@@ -398,17 +398,19 @@ def search_settings(config: dict) -> dict:
     """The part of a recorded configuration that can change a run's result.
 
     Manifests from before games carried their own settings are read into the
-    same shape, so an old run and a new one under the same rules group together.
+    same shape, and settings the engine no longer has are left out, so an old
+    run and a new one under the same rules group together.
     """
     settings = {
         "game": str(config.get("game", "snake")),
         "settings": checkpoint.saved_settings({}, config),
     }
     for section in SEARCH_SECTIONS:
-        values = dict(config.get(section) or {})
-        for name in IGNORED_SETTINGS.get(section, ()):
-            values.pop(name, None)
-        settings[section] = values
+        names = {f.name for f in dataclasses.fields(getattr(CONFIG, section))}
+        names -= IGNORED_SETTINGS.get(section, set())
+        settings[section] = {
+            name: value for name, value in (config.get(section) or {}).items() if name in names
+        }
     return settings
 
 

@@ -25,8 +25,9 @@ the episode is over.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any, ClassVar
 
 import numpy as np
@@ -409,6 +410,31 @@ class Game:
         """The function that builds observations, so a profile can time it alone."""
         return type(self).observe
 
+    # -------------------------------------------------------------- settings
+
+    @classmethod
+    def setting_choices(cls) -> dict[str, tuple]:
+        """The values allowed for each setting that has a fixed set, by dotted path."""
+        return {}
+
+    @classmethod
+    def setting_problems(cls, settings) -> list[str]:
+        """Why `settings` cannot be played, one sentence for each problem.
+
+        Called only once every setting has the type of its default. A setting
+        outside its `setting_choices` is reported apart from these.
+        """
+        return []
+
+    @classmethod
+    def unused_settings(cls, settings) -> dict[str, str]:
+        """Settings the others leave without effect, by path, each with the reason.
+
+        A run refuses one of these when it is set by name, since a value that is
+        given and then ignored reads as a result that was never tested.
+        """
+        return {}
+
     # -------------------------------------------------------------- model file
 
     def model_inputs(self) -> dict:
@@ -455,16 +481,62 @@ def load_settings(cls: type, data: Mapping | None, *, strict: bool = True):
         elif isinstance(current, tuple) and isinstance(value, list):
             value = tuple(value)
         values[field.name] = value
-    unknown = set(data) - {f.name for f in dataclasses.fields(cls)}
+    names = [f.name for f in dataclasses.fields(cls)]
+    unknown = set(data) - set(names)
     if strict and unknown:
-        raise ValueError(f"{cls.__name__} has no setting {sorted(unknown)[0]!r}")
+        raise ValueError(_no_setting(cls, sorted(unknown)[0], names))
     return cls(**values)
 
 
 def override(settings, path: str, value):
     """A copy of `settings` with the setting at dotted `path` replaced."""
     head, _, rest = path.partition(".")
+    names = [f.name for f in dataclasses.fields(settings)]
+    if head not in names:
+        raise ValueError(_no_setting(type(settings), head, names))
     current = getattr(settings, head)
     if rest:
+        if not dataclasses.is_dataclass(current):
+            raise ValueError(f"{type(settings).__name__}.{head} holds no settings of its own")
         value = override(current, rest, value)
     return dataclasses.replace(settings, **{head: value})
+
+
+def _no_setting(cls: type, name: str, names: Iterable[str]) -> str:
+    match = closest(name, names)
+    hint = f"; did you mean {match!r}?" if match else ""
+    return f"{cls.__name__} has no setting {name!r}{hint}"
+
+
+def closest(name: str, options: Iterable[str]) -> str | None:
+    """The option spelled most like `name`, or None when none comes close.
+
+    Dotted names are compared by their last part as well, so "width" finds
+    "board.width" and a setting put in the wrong section still finds its own.
+    """
+    leaf = name.rpartition(".")[2]
+    best, best_ratio = None, 0.0
+    for option in options:
+        ratio = max(
+            SequenceMatcher(None, name, option).ratio(),
+            SequenceMatcher(None, leaf, option.rpartition(".")[2]).ratio(),
+        )
+        if ratio > best_ratio:
+            best, best_ratio = option, ratio
+    return best if best_ratio >= 0.6 else None
+
+
+class Problems(list):
+    """Problems found in a set of settings, one sentence each."""
+
+    def at_least(self, path: str, value, low) -> None:
+        if value < low:
+            self.append(f"{path} must be at least {low}, not {value}")
+
+    def above(self, path: str, value, low) -> None:
+        if value <= low:
+            self.append(f"{path} must be above {low}, not {value}")
+
+    def between(self, path: str, value, low, high) -> None:
+        if not low <= value <= high:
+            self.append(f"{path} must be between {low} and {high}, not {value}")

@@ -8,7 +8,7 @@ without circular-import risk.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 # Repository root, derived from this file's location (evolvarium/config.py).
@@ -46,13 +46,10 @@ class EvolutionConfig:
     mutation_method: str = "gaussian"  # gaussian | polynomial
     polynomial_eta: float = 20.0
 
-    # Mutation widens while the best score refuses to move, within these bounds.
-    min_mutation_rate: float = 0.06
+    # Mutation widens by `stagnation_step` for each generation the best score
+    # refuses to move, up to `max_mutation_rate`, and falls back on a record.
     max_mutation_rate: float = 0.35
     stagnation_step: float = 0.02
-
-    elite_mutation_rate: float = 0.04
-    elite_mutation_strength: float = 0.02
 
     # Fraction of moves replaced by a random action during evaluation. Kept small:
     # a genome's score should reflect its policy, not the noise floor.
@@ -66,8 +63,6 @@ class EvolutionConfig:
     use_speciation: bool = False
     compatibility_threshold: float = 3.0
     target_species: int = 8
-
-    hall_of_fame_size: int = 40
 
 
 @dataclass(frozen=True)
@@ -146,8 +141,12 @@ class Config:
     paths: PathConfig = field(default_factory=PathConfig)
 
     def with_overrides(self, **sections) -> Config:
-        """Return a copy with whole sections replaced. Used by the CLI."""
+        """Return a copy with whole sections replaced."""
         return replace(self, **sections)
 
+
+# The engine's sections. A game's own settings are named beside them, such as
+# "board.width" beside "evolution.population_size", so no game may use these.
+SECTIONS = tuple(f.name for f in fields(Config) if f.name not in ("game", "settings"))
 
 CONFIG = Config()

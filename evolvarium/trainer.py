@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import games
+from . import games, settings
 from .config import Config
 from .events import (
     EventBus,
@@ -51,8 +51,10 @@ class Trainer:
         max_generations: int | None = None,
     ):
         # The game's settings are filled in first, so the manifest records the
-        # rules the run actually plays under.
+        # rules the run actually plays under. Settings that cannot train stop
+        # the run here, before it has a directory.
         config = games.resolve(config)
+        settings.check(config)
         self.config = config
         self.run_id = run_id or new_run_id()
         self.run_dir = config.paths.runs_dir / self.run_id

@@ -372,5 +372,10 @@ class FeatureSpec:
         return self._encode(episode, self._config)
 
 
+# The encodings that read each of the settings beside `spec`.
+FLOOD_FILL_SPECS = ("egocentric_v1",)
+HORIZON_SPECS = ("egocentric_v3", "egocentric_v4", "egocentric_v5")
+
+
 def available_specs() -> dict[str, int]:
     return {name: size for name, (_, size, _) in _SPECS.items()}

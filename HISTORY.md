@@ -10,6 +10,72 @@ directly.
 
 ---
 
+## Settings by name - checked before a run starts
+
+The command line had flags for some settings and none for the rest: four of
+Snake's, `--board`, `--spec` and the two death penalties, and fourteen of the
+engine's. Anything else meant editing `config.py`. Nothing checked the values.
+Some failed once the run was under way: a starting snake longer than half the
+board's height stopped the first generation with an IndexError from inside the
+episode. Others were quietly bent into something that could run: a tournament
+of 1 drew 2, and a mutation rate above its ceiling ran at the ceiling. A setting
+that the others switch off, such as the tournament size under rank selection,
+was accepted and ignored, so a sweep over it would compare runs that were all
+the same.
+
+**Names.** Every setting now has one name. A game's are named by their path in
+its settings, such as `board.width`, and the engine's by section, such as
+`evolution.population_size`. `train --set NAME=VALUE` sets any of them and reads
+the value as the setting's type, with lists written comma-separated.
+`--game` picks the game, built in or `module:Class`. The flags for the settings
+a sweep changes most, such as `--population` and `--mutation-rate`, stay as
+short forms of the same thing. Snake's own flags are gone, so `cli.py`
+imports nothing from Snake, and so is `--no-speciation`, which turned off what
+is already off by default. `settings` lists every setting a game trains under,
+its value and its choices. It replaces `specs`, which listed Snake's encodings.
+
+**Checks.** `evolvarium/settings.py` checks a configuration as a whole and
+reports every problem in one list:
+
+- a name that is not a setting, with the closest one that is. Dotted names are
+  also compared by their last part, so `width` finds `board.width`;
+- a value that cannot be read, or does not have the type of the default;
+- a value outside the setting's choices, with the closest one;
+- a value out of range, or at odds with another: elites and immigrants that
+  leave no room for offspring, a mutation rate above `max_mutation_rate`,
+  activations that do not match the hidden layers one for one, a tournament
+  outside 2 to the population;
+- a setting given by name that the others leave without effect, with the reason,
+  such as "evolution.tournament_size has no effect, since evolution.selection is
+  rank". Left at its default it is not an error and is not range-checked, since
+  nothing reads it.
+
+A game adds its own through three hooks on the contract. `setting_choices` gives
+the values a setting allows, `setting_problems` checks its settings against each
+other, and `unused_settings` names the ones the others switch off. Snake checks
+its board and that the starting snake fits below the centre cell, and refuses a
+negative fitness weight, since the formula gives each weight its sign. The flood
+fill limit is unused unless the encoding is `egocentric_v1`, the space horizon
+unless it is v3 to v5, and the shape of each fitness term unless its weight is
+above 0. Under `--headless` the server settings and `--open` have no effect
+either. The trainer runs the same check before it creates the run's directory,
+so a configuration that cannot train leaves nothing behind.
+
+**Removed settings.** `elite_mutation_rate`, `elite_mutation_strength` and
+`hall_of_fame_size` were read by nothing. `min_mutation_rate` was a floor under
+a rate that only ever widens from `mutation_rate`, so it only acted on a
+`mutation_rate` set below it, which it raised without saying so. The rate now
+starts where it is set. Manifests that record these still load, and `inspect`
+and the held-out grouping leave them out.
+
+**Checking it.** `tests/test_settings.py` has 67 tests: reading each type from
+text, each kind of problem for the engine and for Snake, each rule for a setting
+without effect, the game in `tests/test_contract.py` under its own settings, the
+registry refusing a game whose setting shares a name with an engine section, the
+trainer stopping before it writes anything, and the command line. The defaults
+pass for both games. The 60 held-out games replay unchanged and resumed runs
+still match uninterrupted ones.
+
 ## Games behind a contract - Snake moves out of the engine
 
 At the baseline the engine was Snake. The population built a Snake episode to
