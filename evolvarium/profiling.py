@@ -444,14 +444,16 @@ def profile_network(architecture: Architecture, genome: np.ndarray, population: 
 # ---------------------------------------------------------------- the pool
 
 def _timed_task(task: tuple) -> tuple[EvalResult, int, float, float]:
-    """`run_task` with the worker's id and wall-clock start and end.
+    """`run_task` with the worker's id and the times it started and ended.
 
-    Wall-clock rather than a performance counter, because the times are compared
-    across processes.
+    The performance counter is one clock for every process on the machine, so a
+    worker's times compare with the parent's. Wall-clock time would as well, but
+    on Windows before Python 3.13 it moves in steps of about 15.6 ms, longer than
+    a whole task on a small board.
     """
-    started = time.time()
+    started = time.perf_counter()
     result = run_task(task)
-    return result, os.getpid(), started, time.time()
+    return result, os.getpid(), started, time.perf_counter()
 
 
 @dataclass
@@ -567,14 +569,14 @@ def profile_pool(ctx: EvalContext, genomes: np.ndarray, trials: int, workers: in
     before, first = _play_alone(ctx, replayed)
 
     played: list[PoolRound] = []
-    started = time.time()
+    started = time.perf_counter()
     with EvaluationPool(ctx, workers) as pool:
         for number in range(1, rounds + 1):
             if number > 1:
-                started = time.time()
+                started = time.perf_counter()
             tasks = [(genome, POOL_SEED * number, trials, True) for genome in genomes]
             stamped = pool.map(tasks, run=_timed_task)
-            finished = time.time()
+            finished = time.perf_counter()
             parts = account([(pid, a, b) for _, pid, a, b in stamped], workers, started,
                             finished)
             results = [result for result, *_ in stamped]
