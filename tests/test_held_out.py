@@ -298,6 +298,14 @@ def test_an_exported_model_scores_like_its_checkpoint(tiny_config, monkeypatch):
     assert np.array_equal(exported.scores, stored.scores)
 
 
+def test_a_version_1_model_still_scores():
+    from test_golden import GOLDEN, ROOT
+
+    champion = held_out.load_champion(ROOT / "models" / "v3-seed99-gen155-81.json")
+    assert champion.context.game == "snake"
+    assert np.array_equal(champion.genome, np.array(GOLDEN["genome"], dtype=np.float32))
+
+
 def test_a_model_for_another_game_is_refused(tiny_config, monkeypatch, tmp_path):
     import evolvarium.cli as cli
 

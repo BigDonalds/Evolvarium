@@ -10,6 +10,41 @@ directly.
 
 ---
 
+## Model files for any game's actions - parts, ranges and version 2
+
+The model file held a list of action names and took the highest output, so only
+a game whose actions were a single choice could export. Herd, the test game that
+moves by a choice and a stride, trained, and exporting it said "the model file
+holds actions that are a single choice".
+
+**The file.** Version 2 records the actions as the game describes them: a list
+of parts, each a choice with its options or a range with its low and high. The
+parts read the network's outputs in order, a choice one per option and a range
+one. `player.py` decodes them as the engine does. A choice takes its highest
+output, the earliest on a tie, and a range stretches the tanh of its output onto
+its bounds. A model with one part gives that part's value and one with several
+a dict by part name, which prints as JSON from a shell. A choice gives its
+option by name, so a choice of 4 gives "3" where the game was handed 3. The
+player reads a version 1 file as a single choice, so the shipped 81.5 model
+loads, plays and scores as before.
+
+**The game's name.** The file recorded the game's short name, which finds only a
+built-in game. It now records the name the registry finds the game by, such as
+`test_contract:Herd` for a game outside the package, so `evaluate` can score an
+export of any game. Scoring a model also checks that its actions are the
+game's. A model whose parts differ, such as a stride with other bounds, is
+refused rather than played with its outputs read as something else.
+
+**Checking it.** The player is compared with the engine's decoding on 300 random
+inputs each for a single choice, a single range, a choice and a range, and
+three parts mixing both. Choices agree exactly. Over 120,000 range decodes from
+random networks the largest gap was 2.5e-7 of the range's width, from float64
+against float32. A Herd model exported after one generation plays two games
+with the player deciding beside the engine at every step, and scores the same
+through `evaluate` as through the engine. Broken parts are refused with the part
+named. The 81.5 model still makes the engine's choice on all 194,094 held-out
+states.
+
 ## Settings by name - checked before a run starts
 
 The command line had flags for some settings and none for the rest: four of

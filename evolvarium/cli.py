@@ -298,9 +298,6 @@ def command_export(args: argparse.Namespace) -> int:
         run_id=run_dir.name,
         destination=destination,
     )
-    if report["unsupported"]:
-        print(f"  cannot export: {report['unsupported']}")
-        return 1
     if selection:
         report["selection"] = selection
     result = export_model.write_model(

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pytest
 
-from evolvarium import games
+from evolvarium import games, held_out
 from evolvarium.config import CONFIG
 from evolvarium.contract import (
     Actions,
@@ -34,8 +34,9 @@ from evolvarium.contract import (
 from evolvarium.evolution.evaluation import EvalContext, make_runner
 from evolvarium.evolution.population import Population
 from evolvarium.games.snake.settings import SnakeSettings
-from evolvarium.nn.network import Architecture
-from evolvarium.persistence import checkpoint
+from evolvarium.nn.network import Architecture, PolicyNetwork
+from evolvarium.persistence import checkpoint, export_model, model_file
+from evolvarium.player import Player
 
 HERD = "test_contract:Herd"
 MOVES = {"left": -1.0, "stay": 0.0, "right": 1.0}
@@ -271,6 +272,8 @@ def test_override_replaces_one_nested_setting():
 def test_the_registry_finds_built_in_and_outside_games():
     assert games.get("snake").name == "snake"
     assert games.get(HERD) is Herd
+    assert games.reference(Herd) == HERD
+    assert games.reference(games.create("snake")) == "snake"
     assert games.create(HERD, HerdSettings(start=1.0)).settings.start == 1.0
     assert games.settings_for(herd_config()) == HerdSettings()
 
@@ -359,6 +362,62 @@ def test_a_checkpoint_of_another_game_round_trips(tmp_path):
     snake = CONFIG.with_overrides(evolution=config.evolution)
     with pytest.raises(checkpoint.CheckpointMismatch, match="trained on 'test_contract:Herd'"):
         checkpoint.load(path, snake)
+
+
+def export_herd(path, seed):
+    population = Population(herd_config(), seed=seed)
+    population.run_generation()
+    genome = population.members[0].genome
+    report = export_model.build_report(
+        generation=0, genome=genome, summaries=[], game=population.game,
+        architecture=population.architecture, run_id="run-herd", destination=path,
+    )
+    assert report["ready"]
+    export_model.write_model(report=report, genome=genome,
+                             architecture=population.architecture, destination=path)
+    return population, genome
+
+
+def test_a_choice_and_a_range_export_and_play_as_trained(tmp_path):
+    path = tmp_path / "herd.json"
+    population, genome = export_herd(path, seed=24)
+    document = model_file.read(path)
+    assert document["actions"]["parts"] == Herd.actions.describe()
+    assert document["game"]["name"] == HERD
+
+    player = Player.load(path)
+    network = PolicyNetwork(population.architecture).load(genome)
+    game = Herd()
+    for seed in (5, 6):
+        game.reset(seed)
+        while not game.over:
+            actions = {}
+            for agent in game.agents:
+                inputs = game.observation.encode(game.observe(agent))
+                engine = game.actions.decode(network.forward(inputs))
+                mine = player.action(inputs.tolist())
+                assert mine["move"] == engine["move"]
+                assert mine["stride"] == pytest.approx(engine["stride"], rel=1e-5)
+                actions[agent] = engine
+            game.step(actions)
+
+    champion = held_out.load_champion(path)
+    assert champion.context.game == HERD
+    assert champion.context.settings == HerdSettings()
+    assert np.array_equal(champion.genome, genome)
+    held_out.score([champion], [40, 41], workers=1)
+    runner = make_runner(dataclasses.replace(population.context, exploration_rate=0.0))
+    assert champion.scores.tolist() == [runner.score(genome, s, 1, False).score for s in (40, 41)]
+
+
+def test_the_engine_refuses_a_model_whose_actions_differ_from_its_game(tmp_path):
+    path = tmp_path / "herd.json"
+    export_herd(path, seed=25)
+    document = model_file.read(path)
+    document["actions"]["parts"][1]["high"] = 2.0
+    model_file.write(document, path)
+    with pytest.raises(held_out.TargetError, match="but the game takes"):
+        held_out.load_champion(path)
 
 
 def test_a_group_game_scores_the_same_in_worker_processes():

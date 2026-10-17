@@ -325,6 +325,7 @@ def _model_champion(path: Path) -> Champion:
         if not isinstance(name, str):
             raise ValueError("no game is named")
         settings = games.get(name).settings_from_model(document)
+        _check_actions(document, games.create(name, settings))
     except ValueError as error:
         raise TargetError(
             f"{path} is a model of {name!r} with {encoding!r} inputs, "
@@ -350,6 +351,18 @@ def _model_champion(path: Path) -> Champion:
         settings=None,
         higher=_higher(context),
     )
+
+
+def _check_actions(document: dict, game) -> None:
+    """Raise ValueError when `game` would read the model's outputs as other actions."""
+    actions = document["actions"]
+    if "parts" in actions:
+        recorded, expected = actions["parts"], game.actions.describe()
+    else:
+        # A version 1 file names its outputs and nothing more.
+        recorded, expected = actions["names"], list(game.actions.names)
+    if recorded != expected:
+        raise ValueError(f"the model acts by {recorded}, but the game takes {expected}")
 
 
 def _run_dir(path: Path) -> Path:

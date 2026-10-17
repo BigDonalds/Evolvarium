@@ -8,10 +8,6 @@ Items still open at the baseline are in Snake-AI's
 
 ## Games
 
-- **Model files hold a single choice.** The file and `player.py` pick the
-  highest output, so a game with a range or with several action parts trains
-  but cannot be exported. The file needs each part's kind and its slice of the
-  outputs, and the player has to decode them the way `contract.Actions` does.
 - **`scored%`** counts genomes whose best episode scored above zero, which says
   nothing about a game that wants its score low.
 - **The dashboard draws Snake.** A game's `scene` gives its kind and size, and

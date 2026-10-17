@@ -35,13 +35,17 @@ def build(
     input_names: Sequence[str],
     encoding: str,
     settings: dict,
-    action_names: Sequence[str],
+    actions: Sequence[dict],
     game: dict,
     source: dict,
     report: dict | None = None,
     exported_at: str | None = None,
 ) -> dict:
-    """The model file for `genome`, as a dict ready for `write`."""
+    """The model file for `genome`, as a dict ready for `write`.
+
+    `actions` is the game's action parts as `contract.Actions.describe` gives
+    them.
+    """
     network = PolicyNetwork(architecture).load(np.asarray(genome, dtype=np.float32))
     arrays = network.layer_arrays()
     layers = []
@@ -64,7 +68,7 @@ def build(
         "source": source,
         "game": game,
         "inputs": {"names": list(input_names), "encoding": encoding, "settings": settings},
-        "actions": {"names": list(action_names), "choice": "argmax"},
+        "actions": {"parts": [dict(part) for part in actions]},
         "network": {"kind": "dense", "layers": layers},
     }
     if report is not None:

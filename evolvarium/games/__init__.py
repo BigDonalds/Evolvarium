@@ -59,6 +59,15 @@ def get(name: str) -> type[Game]:
     return cls
 
 
+def reference(game: Game | type[Game]) -> str:
+    """The name `get` finds a game by: its short name if built in, else "module:Class"."""
+    cls = game if isinstance(game, type) else type(game)
+    for name in _BUILT_IN:
+        if get(name) is cls:
+            return name
+    return f"{cls.__module__}:{cls.__qualname__}"
+
+
 def create(name: str, settings=None) -> Game:
     return get(name)(settings)
 

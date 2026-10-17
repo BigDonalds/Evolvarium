@@ -10,10 +10,6 @@ Export is deliberately two-phase. `build_report` gathers the statistics,
 achievements, timings and size for a chosen generation without touching the
 filesystem, so the dashboard can show exactly what is about to be written.
 `write_model` then produces the files.
-
-The model file picks an action as the highest of the network's outputs, so it
-holds games whose actions are a single choice. Any other game can train but
-cannot export yet.
 """
 
 from __future__ import annotations
@@ -25,7 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
-from ..contract import Choice, Game
+from .. import games
+from ..contract import Game
 from ..nn.network import Architecture, PolicyNetwork
 from . import model_file
 
@@ -135,11 +132,9 @@ def build_report(
     training = summarise_training(summaries, generation, game.direction)
     unlocked = [a for a in achievements if a.reached]
     inputs = game.model_inputs()
-    unsupported = unsupported_actions(game)
 
     report = {
-        "ready": genome is not None and unsupported is None,
-        "unsupported": unsupported,
+        "ready": genome is not None,
         "generation": generation,
         "run_id": run_id,
         "torch_available": torch_available(),
@@ -155,8 +150,8 @@ def build_report(
             "names": list(game.observation.names),
             "settings": inputs["settings"],
         },
-        "game": {"name": game.name, **game.model_rules()},
-        "actions": list(game.actions.names),
+        "game": {"name": games.reference(game), **game.model_rules()},
+        "actions": game.actions.describe(),
         "training": training,
         "achievements": [a.to_dict() for a in achievements],
         "achievements_unlocked": len(unlocked),
@@ -169,17 +164,7 @@ def build_report(
     return report
 
 
-def unsupported_actions(game: Game) -> str | None:
-    """Why the model file cannot hold `game`'s actions, or None when it can."""
-    parts = game.actions.parts
-    if len(parts) == 1 and isinstance(parts[0], Choice):
-        return None
-    return "the model file holds actions that are a single choice"
-
-
 def _document(report: dict, genome: np.ndarray, architecture: Architecture) -> dict:
-    if report.get("unsupported"):
-        raise ValueError(f"cannot export: {report['unsupported']}")
     inputs = report["inputs"]
     source = {"run": report["run_id"], "generation": report["generation"]}
     # How the genome was chosen, when it was not simply the stored champion.
@@ -191,7 +176,7 @@ def _document(report: dict, genome: np.ndarray, architecture: Architecture) -> d
         input_names=inputs["names"],
         encoding=inputs["encoding"],
         settings=inputs["settings"],
-        action_names=report["actions"],
+        actions=report["actions"],
         game=report["game"],
         source=source,
         report={"training": report["training"], "achievements": report["achievements"]},

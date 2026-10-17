@@ -565,9 +565,7 @@ function renderExportReport(report) {
     .join(" · ");
 
   let notice = "";
-  if (report.unsupported) {
-    notice = `<p class="hint" style="color:var(--warn)">Cannot export: ${escape(report.unsupported)}.</p>`;
-  } else if (!report.genome_available) {
+  if (!report.genome_available) {
     notice = `<p class="hint" style="color:var(--warn)">No champion genome is archived at or before generation ${report.requested_generation}.</p>`;
   } else if (!report.torch_available) {
     notice = `<p class="hint">Only the JSON model is written. <code>pip install torch</code> adds a .pt copy beside it.</p>`;

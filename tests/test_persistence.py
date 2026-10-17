@@ -197,9 +197,12 @@ def test_export_report_writes_nothing(small_config, tmp_path):
 
     assert not destination.exists()
     assert report["parameter_count"] == population.architecture.genome_size
-    assert report["unsupported"] is None
+    assert report["ready"]
     assert report["inputs"]["size"] == population.game.observation.size
-    assert report["actions"] == ["left", "straight", "right"]
+    assert report["actions"] == [
+        {"name": "turn", "kind": "choice", "options": ["left", "straight", "right"]},
+    ]
+    assert report["game"]["name"] == "snake"
     unlocked = [a for a in report["achievements"] if a["unlocked"]]
     assert any(a["key"] == "score_1" for a in unlocked)
     assert report["training"]["best_score"] == 3

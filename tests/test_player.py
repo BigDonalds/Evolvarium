@@ -20,15 +20,19 @@ import numpy as np
 import pytest
 from test_golden import GOLDEN, QUICK_SEEDS, ROOT, golden_settings, recorded
 
+from evolvarium.contract import Actions, Choice, Range
 from evolvarium.games.snake import SnakeGame
 from evolvarium.nn.activations import ACTIVATIONS as ENGINE_ACTIVATIONS
 from evolvarium.nn.network import Architecture, PolicyNetwork, random_genome
 from evolvarium.persistence import model_file
 from evolvarium.player import ACTIVATIONS, ModelError, Player, check
+from evolvarium.player import main as player_main
 
 MODEL = ROOT / "models" / "v3-seed99-gen155-81.json"
 PLAYER = ROOT / "evolvarium" / "player.py"
 STATES_IN_BLOCK = 194_094
+MOVE = [{"name": "move", "kind": "choice", "options": ["a", "b", "c"]}]
+MOVE_AND_STRIDE = Actions(Choice("move", ("left", "stay", "right")), Range("stride", 0.5, 1.5))
 
 
 def play_both(seeds) -> tuple[list[dict], int, list[tuple]]:
@@ -59,22 +63,32 @@ def play_both(seeds) -> tuple[list[dict], int, list[tuple]]:
     return games, states, differ
 
 
-def document_for(genome, architecture) -> dict:
+def document_for(genome, architecture, actions=MOVE) -> dict:
     return model_file.build(
         genome=genome, architecture=architecture,
         input_names=[f"x{i}" for i in range(architecture.input_size)], encoding="test",
-        settings={}, action_names=["a", "b", "c"], game={"name": "test"}, source={},
+        settings={}, actions=actions, game={"name": "test"}, source={},
     )
 
 
-def small_model(activations, seed=0, scale=1.0) -> tuple[dict, np.ndarray, Architecture]:
+def version_1(document):
+    """The same model laid out as version 1, which names the outputs of one choice."""
+    document["version"] = 1
+    document["actions"] = {"names": ["a", "b", "c"], "choice": "argmax"}
+
+
+def small_model(activations, seed=0, scale=1.0,
+                actions=None) -> tuple[dict, np.ndarray, Architecture]:
+    """A random model with 5 inputs, acting by `actions` or a choice of a, b and c."""
     architecture = Architecture(
         input_size=5, hidden_layers=(7,) * len(activations),
-        hidden_activations=tuple(activations), output_size=3,
+        hidden_activations=tuple(activations),
+        output_size=3 if actions is None else actions.size,
     )
     rng = np.random.default_rng(seed)
     genome = random_genome(architecture, rng, 1.0, 1.0) * np.float32(scale)
-    return document_for(genome, architecture), genome, architecture
+    parts = MOVE if actions is None else actions.describe()
+    return document_for(genome, architecture, parts), genome, architecture
 
 
 def test_player_makes_the_engines_choice_in_the_quick_games():
@@ -129,6 +143,49 @@ def test_player_activations_match_the_engines():
         assert [function(z) for z in points] == pytest.approx(engine, rel=1e-12), name
 
 
+@pytest.mark.parametrize("actions", [
+    Actions(Choice("turn", ("left", "straight", "right"))),
+    Actions(Range("throttle", -2.0, 3.0)),
+    MOVE_AND_STRIDE,
+    Actions(Range("x"), Choice("lane", 4), Range("y", 0.0, 10.0)),
+], ids=["choice", "range", "choice-and-range", "three-parts"])
+def test_player_acts_as_the_engine_decodes(actions):
+    architecture = Architecture(input_size=5, hidden_layers=(7,), hidden_activations=("tanh",),
+                                output_size=actions.size)
+    genome = random_genome(architecture, np.random.default_rng(5), 1.0, 1.0)
+    player = Player(document_for(genome, architecture, actions.describe()))
+    network = PolicyNetwork(architecture).load(genome)
+    assert player.action_names == actions.names
+
+    def by_part(value):
+        return value if len(actions.parts) > 1 else {actions.parts[0].name: value}
+
+    rng = np.random.default_rng(6)
+    for _ in range(300):
+        x = rng.normal(0.0, 2.0, 5).astype(np.float32)
+        mine = by_part(player.action(x.tolist()))
+        engine = by_part(actions.decode(network.forward(x)))
+        assert list(mine) == list(engine)
+        for part in actions.parts:
+            if isinstance(part, Range):
+                assert mine[part.name] == pytest.approx(engine[part.name], rel=1e-5, abs=1e-5)
+            else:
+                # The engine delivers the option itself and the player its name.
+                assert mine[part.name] == str(engine[part.name])
+
+
+def test_a_version_1_file_reads_as_one_choice():
+    document, _, _ = small_model(("tanh",), seed=7, scale=2.0)
+    old = json.loads(json.dumps(document))
+    version_1(old)
+    current, earlier = Player(document), Player(old)
+    assert earlier.action_names == current.action_names == ("a", "b", "c")
+    rng = np.random.default_rng(8)
+    for _ in range(100):
+        x = rng.normal(0.0, 2.0, 5).tolist()
+        assert earlier.action(x) == current.action(x)
+
+
 def test_ties_go_to_the_earliest_action():
     document, _, _ = small_model(("tanh",))
     last = document["network"]["layers"][-1]
@@ -140,11 +197,31 @@ def test_ties_go_to_the_earliest_action():
 def test_player_describes_the_model():
     player = Player.load(MODEL)
     assert player.parameter_count == 435
-    assert player.describe().splitlines()[-1] == (
-        "network: 11 -> 16 tanh -> 12 tanh -> 3 linear, 435 parameters"
-    )
+    assert player.describe().splitlines()[1:] == [
+        "action: one of left, straight, right",
+        "network: 11 -> 16 tanh -> 12 tanh -> 3 linear, 435 parameters",
+    ]
     with pytest.raises(ValueError, match="takes 11 inputs, got 2"):
         player.action([0.0, 1.0])
+
+
+def test_player_describes_each_action_part():
+    document, _, _ = small_model(("tanh",), actions=MOVE_AND_STRIDE)
+    assert Player(document).describe().splitlines()[1:3] == [
+        "action move: one of left, stay, right",
+        "action stride: from 0.5 to 1.5",
+    ]
+
+
+def test_the_command_line_prints_several_parts_as_json(tmp_path, capsys):
+    document, _, _ = small_model(("tanh",), actions=MOVE_AND_STRIDE)
+    path = tmp_path / "model.json"
+    model_file.write(document, path)
+
+    assert player_main([str(path), "0", "1", "0", "0.5", "-1"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed == Player.load(path).action([0.0, 1.0, 0.0, 0.5, -1.0])
+    assert set(printed) == {"move", "stride"}
 
 
 def broken(change):
@@ -162,12 +239,48 @@ def _set(path, value):
     return change
 
 
+def _then(*changes):
+    def change(document):
+        for each in changes:
+            each(document)
+    return change
+
+
+def _two_parts(**stride):
+    """Actions of a choice of two and a range, the range's fields replaced by `stride`."""
+    return _set(("actions", "parts"), [
+        {"name": "move", "kind": "choice", "options": ["a", "b"]},
+        {"name": "stride", "kind": "range", "low": 0.5, "high": 1.5, **stride},
+    ])
+
+
+def test_a_choice_and_a_range_fill_three_outputs():
+    check(broken(_two_parts()))
+
+
 @pytest.mark.parametrize("change, message", [
     (_set(("format",), "snake-ai-model"), "not an Evolvarium model"),
-    (_set(("version",), 2), "reads version 1; the file is version 2"),
+    (_set(("version",), 3), "reads version 1 or 2; the file is version 3"),
+    (_set(("version",), True), "the file is version True"),
     (_set(("inputs", "names"), []), "inputs.names must be a list"),
-    (_set(("actions", "names"), ["a", 3, "c"]), "actions.names must be a list"),
-    (_set(("actions", "choice"), "sample"), "chosen by 'sample'"),
+    (_set(("actions", "parts"), []), "actions.parts must be a list"),
+    (_set(("actions",), {"names": ["a", "b", "c"], "choice": "argmax"}),
+     "actions.parts must be a list"),
+    (_set(("actions", "parts", 0), "move"), "action part 0 is not an object"),
+    (_set(("actions", "parts", 0, "name"), ""), "action part 0 needs a name"),
+    (_set(("actions", "parts", 0, "kind"), "vector"), "has kind 'vector'"),
+    (_set(("actions", "parts", 0, "options"), ["a"]), "at least two option names"),
+    (_set(("actions", "parts", 0, "options"), ["a", 2, "c"]), "at least two option names"),
+    (_set(("actions", "parts", 0, "options"), ["a", "b", "a"]), "lists an option twice"),
+    (_set(("actions", "parts", 0, "options"), ["a", "b"]),
+     "gives 3 outputs, but the actions read 2"),
+    (_two_parts(name="move"), "two action parts are named 'move'"),
+    (_two_parts(low=None), "range 'stride' holds None"),
+    (_two_parts(high=0.5), "needs low below high"),
+    (_then(version_1, _set(("actions", "names"), ["a", 3, "c"])), "actions.names must be a list"),
+    (_then(version_1, _set(("actions", "choice"), "sample")), "chosen by 'sample'"),
+    (_then(version_1, _set(("actions", "names"), ["a", "b"])),
+     "gives 3 outputs, but the actions read 2"),
     (_set(("network", "kind"), "graph"), "network kind is 'graph'"),
     (_set(("network", "layers"), []), "at least one layer"),
     (_set(("network", "layers", 0, "inputs"), 0), "whole numbers of inputs and outputs"),
@@ -179,7 +292,6 @@ def _set(path, value):
     (_set(("network", "layers", 0, "weights", 1, 3), math.nan), "not a finite number"),
     (_set(("network", "layers", 1, "biases", 0), True), "not a finite number"),
     (_set(("network", "layers", 1, "biases", 0), "0.5"), "not a finite number"),
-    (_set(("actions", "names"), ["a", "b"]), "gives 3 outputs, but there are 2 actions"),
 ])
 def test_broken_files_are_refused(change, message):
     with pytest.raises(ModelError, match=message):

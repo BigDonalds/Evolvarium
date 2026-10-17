@@ -188,8 +188,6 @@ class DashboardServer:
             }
 
         report = self.export_preview(generation)
-        if report["unsupported"]:
-            return {"error": f"cannot export: {report['unsupported']}", "generation": resolved}
         return export_model.write_model(
             report=report,
             genome=genome,
