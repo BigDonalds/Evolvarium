@@ -34,6 +34,7 @@ from .contract import load_settings
 from .evolution.evaluation import EvalContext, EvalResult, make_runner
 from .evolution.pool import EvaluationPool, resolve_workers
 from .persistence import checkpoint, model_file
+from .telemetry.history import read_summaries
 
 # Engine sections that decide which champion a run ends with, beside the game
 # and its settings. Paths, the dashboard, retention and the worker count change
@@ -513,13 +514,20 @@ def score(champions: list[Champion], seeds: list[int], workers: int) -> None:
             c.ends = Counter(r.end for r in chunk)
 
 
-def _play(ctx: EvalContext, tasks: list[tuple], workers: int) -> list[EvalResult]:
+def _play(ctx: EvalContext, tasks: list[tuple], workers: int,
+          played=None) -> list[EvalResult]:
+    """Score every task, calling `played()` after each one if it is given."""
     workers = min(resolve_workers(workers), len(tasks))
     if workers <= 1:
         runner = make_runner(ctx)
-        return [runner.score(*task) for task in tasks]
+        results = []
+        for task in tasks:
+            results.append(runner.score(*task))
+            if played is not None:
+                played()
+        return results
     with EvaluationPool(ctx, workers) as pool:
-        return pool.map(tasks)
+        return pool.map(tasks, played=played)
 
 
 def t_critical(dof: float) -> float:
@@ -596,25 +604,29 @@ class Choice:
 
 
 def candidates_from(path: Path) -> list[tuple[str, np.ndarray]]:
+    """Every genome a checkpoint's run can offer."""
+    with np.load(path, allow_pickle=False) as archive:
+        champion = (
+            np.array(archive["best_genome"], dtype=np.float32)
+            if "best_genome" in archive.files else None
+        )
+        population = np.array(archive["genomes"], dtype=np.float32)
+    return gather_candidates(champion, population, _run_dir(path))
+
+
+def gather_candidates(champion: np.ndarray | None, population,
+                      run_dir: Path) -> list[tuple[str, np.ndarray]]:
     """Every genome a run can offer: its champion, its population, its past champions.
 
     The stored champion is listed first so that, when a population member or an
     archived champion is the same genome, it keeps the name people will recognise.
     """
     found: list[tuple[str, np.ndarray]] = []
-    with np.load(path, allow_pickle=False) as archive:
-        if "best_genome" in archive.files:
-            found.append(("stored champion", np.array(archive["best_genome"], dtype=np.float32)))
-        for index, genome in enumerate(np.array(archive["genomes"], dtype=np.float32)):
-            found.append((f"population member {index}", genome))
-    for replay in sorted((_run_dir(path) / "replays").glob("gen_*.json.gz")):
-        try:
-            payload = json.loads(gzip.open(replay, "rt", encoding="utf-8").read())
-        except (OSError, ValueError):
-            continue
-        if payload.get("best_genome"):
-            found.append((f"champion held at generation {payload.get('generation')}",
-                          np.array(payload["best_genome"], dtype=np.float32)))
+    if champion is not None:
+        found.append(("stored champion", np.asarray(champion, dtype=np.float32)))
+    for index, genome in enumerate(population):
+        found.append((f"population member {index}", np.asarray(genome, dtype=np.float32)))
+    found.extend(archived_champions(run_dir))
 
     unique, seen = [], set()
     for source, genome in found:
@@ -625,12 +637,46 @@ def candidates_from(path: Path) -> list[tuple[str, np.ndarray]]:
     return unique
 
 
+def archived_champions(run_dir: Path) -> list[tuple[str, np.ndarray]]:
+    """The past champions a run's replays hold, one for each time it changed.
+
+    Every archived generation stores the champion as it stood then, and the
+    champion changes only on a record, which is never evicted. The first
+    generation still on disk and the records hold every champion the rest do,
+    so only those are opened. A history that does not mark its records has all
+    of them opened.
+    """
+    files = sorted((run_dir / "replays").glob("gen_*.json.gz"))
+    summaries = read_summaries(run_dir / "history.jsonl")
+    if summaries and all("record" in s for s in summaries):
+        records = {int(s["generation"]) for s in summaries if s["record"]}
+        files = [path for index, path in enumerate(files)
+                 if index == 0 or _archived_generation(path) in records]
+    found = []
+    for replay in files:
+        try:
+            with gzip.open(replay, "rt", encoding="utf-8") as handle:
+                payload = json.loads(handle.read())
+        except (OSError, ValueError, EOFError):
+            continue
+        if payload.get("best_genome"):
+            found.append((f"champion held at generation {payload.get('generation')}",
+                          np.array(payload["best_genome"], dtype=np.float32)))
+    return found
+
+
+def _archived_generation(path: Path) -> int:
+    # gen_000154.json.gz
+    return int(path.name.split(".")[0].split("_")[1])
+
+
 def choose_by_average(
     candidates: list[tuple[str, np.ndarray]],
     context: EvalContext,
     workers: int,
     *,
     score=None,
+    progress=None,
     screen_games: int = SCREEN_GAMES,
     finalists: int = FINALISTS,
     final_games: int = FINAL_GAMES,
@@ -649,20 +695,41 @@ def choose_by_average(
     `score(genomes, seeds)` returns a candidates-by-seeds matrix of scores, and
     defaults to playing the games under `context`. Without a context the scores
     are taken as higher-is-better.
+
+    `progress(stage, played, games)` is told how far the "screen" and the
+    "final" have got: after every game when the games are played here, and at
+    the start and end of each stage under a `score` given by the caller.
     """
     # Scores are flipped for a game that wants them low, so "best" below is
     # always the largest.
     sign = 1.0 if context is None or _higher(context) else -1.0
+    counted = score is None
     if score is None:
-        def score(genomes, seeds):
-            return _score_matrix(context, genomes, seeds, workers)
+        def score(genomes, seeds, played=None):
+            return _score_matrix(context, genomes, seeds, workers, played)
+
+    def stage(name, genomes, seeds):
+        if progress is None:
+            return score(genomes, seeds)
+        total = len(genomes) * len(seeds)
+        progress(name, 0, total)
+        count = 0
+
+        def played():
+            nonlocal count
+            count += 1
+            progress(name, count, total)
+
+        matrix = score(genomes, seeds, played) if counted else score(genomes, seeds)
+        progress(name, total, total)
+        return matrix
 
     screen_seeds = list(range(SELECTION_FIRST_SEED, SELECTION_FIRST_SEED + screen_games))
     final_start = SELECTION_FIRST_SEED + screen_games
     final_seeds = list(range(final_start, final_start + final_games))
 
     genomes = [genome for _, genome in candidates]
-    screen = sign * np.asarray(score(genomes, screen_seeds), dtype=float)
+    screen = sign * np.asarray(stage("screen", genomes, screen_seeds), dtype=float)
     order = np.argsort(-screen.mean(axis=1), kind="stable")
     chosen = [int(i) for i in order[:finalists]]
     stored = next((i for i, (source, _) in enumerate(candidates)
@@ -670,7 +737,9 @@ def choose_by_average(
     if stored is not None and stored not in chosen:
         chosen.append(stored)
 
-    final = sign * np.asarray(score([genomes[i] for i in chosen], final_seeds), dtype=float)
+    final = sign * np.asarray(
+        stage("final", [genomes[i] for i in chosen], final_seeds), dtype=float
+    )
     totals = np.concatenate([screen[chosen], final], axis=1).mean(axis=1)
     best = int(np.argmax(totals))
     winner = chosen[best]
@@ -686,6 +755,8 @@ def choose_by_average(
     )
 
 
-def _score_matrix(context: EvalContext, genomes, seeds, workers: int) -> np.ndarray:
-    results = _play(context, [(g, s, 1, False) for g in genomes for s in seeds], workers)
+def _score_matrix(context: EvalContext, genomes, seeds, workers: int,
+                  played=None) -> np.ndarray:
+    tasks = [(g, s, 1, False) for g in genomes for s in seeds]
+    results = _play(context, tasks, workers, played)
     return np.array([r.score for r in results], dtype=float).reshape(len(genomes), len(seeds))

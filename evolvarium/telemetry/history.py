@@ -172,6 +172,10 @@ class HistoryStore:
                 "mean_fitness": [s["mean_fitness"] for s in self._summaries],
                 "diversity": [s.get("diversity", 0) for s in self._summaries],
                 "scoring_fraction": [s.get("scoring_fraction", 0) for s in self._summaries],
+                "mutation_rate": [s.get("mutation_rate", 0) for s in self._summaries],
+                "mean_steps": [s.get("mean_steps", 0) for s in self._summaries],
+                "stagnation": [s.get("stagnation", 0) for s in self._summaries],
+                "record": [bool(s.get("record")) for s in self._summaries],
             }
 
     def available(self) -> list[int]:

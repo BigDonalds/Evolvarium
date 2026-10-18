@@ -2,18 +2,30 @@
 
 Standard library only, so the dashboard adds no dependencies to the project.
 
+Every GET about a run takes `run=ID` and otherwise answers for the run training
+here, or the newest run when none is.
+
 Endpoints
-    GET  /                          dashboard page
-    GET  /api/status                live training status and gate state
-    GET  /api/events                training events as they happen (server-sent events)
-    GET  /api/curve                 per-generation series for the charts
-    GET  /api/generation?n=N        one generation's agents and replays
-    GET  /api/generations           which generations can still be replayed
-    POST /api/heartbeat             viewer presence, keeps the hold lease alive
-    POST /api/control               hold / continue / run free
-    GET  /api/checkpoints           checkpoints on disk
-    GET  /api/export/preview?n=N    export report, writes nothing
-    POST /api/export                write the model file
+    GET  /                            dashboard page
+    GET  /api/runs                    every run in the runs directory
+    GET  /api/games                   the games a run can be started on
+    GET  /api/settings?game=NAME      the settings a new run of that game starts from
+    POST /api/runs/start              start a run: game, settings, generations, seed
+    POST /api/runs/stop               end the live run after its generation
+    GET  /api/compare?runs=A,B        several runs' curves and totals side by side
+    GET  /api/status                  a run's status, and the gate's for the live run
+    GET  /api/events                  live training events (server-sent events)
+    GET  /api/curve                   per-generation series for the charts
+    GET  /api/generation?n=N          one generation's agents and replays
+    GET  /api/generations             which generations can still be replayed
+    POST /api/heartbeat               viewer presence, keeps the hold lease alive
+    POST /api/control                 hold / continue / run free
+    GET  /api/checkpoints             checkpoints on disk
+    GET  /api/export/preview?n=N      export report for the champion, writes nothing
+    POST /api/export/choose           start choosing a genome by its average
+    GET  /api/export/job?id=ID        how far a choice has got, and its report
+    POST /api/export/cancel           stop a choice
+    POST /api/export                  write the model file
 """
 
 from __future__ import annotations
@@ -23,17 +35,12 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
-import numpy as np
-
-from ..persistence import checkpoint, export_model
-from ..telemetry.history import lineage_summaries
+from .. import games
+from ..persistence import export_model
+from .runs import Lab, RunView
 from .stream import EventLog
-
-if TYPE_CHECKING:  # the trainer imports this module, so keep the edge one-way
-    from ..trainer import Trainer
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -48,6 +55,8 @@ _CONTENT_TYPES = {
 # at level 5, in about 25 ms.
 _COMPRESS_FROM = 1024
 _COMPRESS_LEVEL = 5
+# Runs set side by side at once.
+_COMPARE_AT_MOST = 8
 
 
 def accepts_gzip(header: str | None) -> bool:
@@ -66,9 +75,25 @@ def accepts_gzip(header: str | None) -> bool:
     return False
 
 
+def _whole(value):
+    """A whole number sent as text read as one; anything else is left for the caller."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return value
+    return value
+
+
+class NoSuchRun(LookupError):
+    pass
+
+
 class DashboardServer:
-    def __init__(self, trainer: Trainer, host: str, port: int):
-        self.trainer = trainer
+    def __init__(self, lab: Lab, host: str, port: int):
+        self.lab = lab
         self.host = host
         self.port = port
         self._httpd: ThreadingHTTPServer | None = None
@@ -88,7 +113,7 @@ class DashboardServer:
             print(f"  dashboard unavailable on {self.host}:{self.port}: {error}")
             return False
         self._httpd.daemon_threads = True
-        self._unsubscribe = self.trainer.events.subscribe(self.events.add)
+        self._unsubscribe = self.lab.listen(lambda run, event: self.events.add(event, run))
         self._thread = threading.Thread(
             target=self._httpd.serve_forever, name="dashboard", daemon=True
         )
@@ -111,41 +136,58 @@ class DashboardServer:
 
     # ------------------------------------------------------------------ handlers
 
-    def status(self) -> dict:
-        return self.trainer.status()
+    def view(self, name: str | None) -> RunView:
+        view = self.lab.run(name)
+        if view is None:
+            raise NoSuchRun(name)
+        return view
 
-    def curve(self) -> dict:
-        return self.trainer.history.curve()
-
-    def generations(self) -> dict:
-        available = self.trainer.history.available()
-        first, last = self.trainer.history.bounds()
+    def runs(self) -> dict:
+        live = self.lab.live
         return {
-            "available": available,
-            "first": first,
-            "last": last,
-            "current": self.trainer.population.generation,
-            "retained": len(available),
+            "runs": self.lab.runs(),
+            "live": None if live is None else live.run_id,
+            "can_start": self.lab.can_start,
+            "game": self.lab.config.game,
         }
 
-    def generation(self, number: int | None) -> dict:
-        record = (
-            self.trainer.history.latest() if number is None else self.trainer.history.get(number)
+    def games(self) -> dict:
+        return {"games": self.lab.games(), "default": self.lab.config.game}
+
+    def settings(self, game: str | None) -> dict:
+        game = game or self.lab.config.game
+        try:
+            return {"game": game, "settings": self.lab.settings_rows(game)}
+        except games.UnknownGame as error:
+            return {"game": game, "error": str(error)}
+
+    def start_run(self, payload: dict) -> dict:
+        chosen = payload.get("settings") or {}
+        if not isinstance(chosen, dict):
+            return {"problems": ["settings are sent as names and values"]}
+        return self.lab.start(
+            str(payload.get("game") or self.lab.config.game),
+            chosen,
+            generations=_whole(payload.get("generations")),
+            seed=_whole(payload.get("seed")),
         )
-        if record is None:
-            return {"error": "generation not available", "generation": number}
-        return {
-            "generation": record.generation,
-            "summary": record.summary,
-            "agents": record.agents,
-            "scene": self.trainer.population.scene,
-        }
+
+    def status(self, name: str | None) -> dict:
+        view = self.view(name)
+        status = view.status()
+        status["can_start"] = self.lab.can_start
+        status["ended_here"] = self.lab.ended_here(view)
+        return status
 
     def control(self, payload: dict) -> dict:
+        live = self.lab.live
+        if live is None or payload.get("run") not in (None, live.run_id):
+            return {"error": "that run is not training here"}
         action = str(payload.get("action", ""))
-        gate = self.trainer.gate
+        gate = live.trainer.gate
         if action == "continue":
-            gate.release(int(payload.get("count", 1)))
+            count = _whole(payload.get("count", 1))
+            gate.release(count if isinstance(count, int) and count > 0 else 1)
         elif action == "hold":
             gate.set_hold(True)
         elif action == "run_free":
@@ -154,72 +196,26 @@ class DashboardServer:
             return {"error": f"unknown action {action!r}"}
         return {"ok": True, "gate": gate.state().to_dict()}
 
-    def checkpoints(self) -> dict:
-        found = checkpoint.list_checkpoints(self.trainer.checkpoint_dir)
-        return {"checkpoints": [c.to_dict() for c in found]}
+    def heartbeat(self) -> dict:
+        """Tell the live run someone is watching; past runs have no gate."""
+        live = self.lab.live
+        if live is None:
+            return {"ok": True, "gate": None}
+        gate = live.trainer.gate
+        gate.heartbeat()
+        return {"ok": True, "gate": gate.state().to_dict()}
 
-    # ------------------------------------------------------------------ export
-
-    def _genome_for(self, generation: int | None) -> tuple[int, np.ndarray | None]:
-        """Champion genome as of `generation`, from the archived history."""
-        population = self.trainer.population
-        if generation is None:
-            genome = population.best_ever_genome
-            return population.generation, None if genome is None else np.asarray(genome)
-
-        record = self.trainer.history.get(generation)
-        if record is not None and record.best_genome:
-            return generation, np.asarray(record.best_genome, dtype=np.float32)
-
-        # Fall back to the most recent archived generation at or before the
-        # request, so a request for an evicted generation still resolves.
-        for candidate in reversed(self.trainer.history.available()):
-            if candidate > generation:
-                continue
-            earlier = self.trainer.history.get(candidate)
-            if earlier is not None and earlier.best_genome:
-                return candidate, np.asarray(earlier.best_genome, dtype=np.float32)
-        return generation, None
-
-    def _export_destination(self) -> Path:
-        return self.trainer.config.paths.exports_dir / "evolvarium.json"
-
-    def export_preview(self, generation: int | None) -> dict:
-        resolved, genome = self._genome_for(generation)
-        report = export_model.build_report(
-            generation=resolved,
-            genome=genome,
-            summaries=lineage_summaries(self.trainer.run_dir),
-            game=self.trainer.population.game,
-            architecture=self.trainer.population.architecture,
-            run_id=self.trainer.run_id,
-            destination=self._export_destination(),
-        )
-        report["requested_generation"] = generation
-        report["resolved_generation"] = resolved
-        return report
+    def compare(self, names: list[str]) -> dict:
+        names = [name for name in names if name][:_COMPARE_AT_MOST]
+        return self.lab.compare(names)
 
     def export_write(self, payload: dict) -> dict:
-        requested = payload.get("generation")
-        generation = int(requested) if requested is not None else None
-        resolved, genome = self._genome_for(generation)
-        if genome is None:
-            return {
-                "error": "no champion genome archived for that generation",
-                "generation": resolved,
-            }
-
-        report = self.export_preview(generation)
-        return export_model.write_model(
-            report=report,
-            genome=genome,
-            architecture=self.trainer.population.architecture,
-            destination=self._export_destination(),
-            archive_dir=self.trainer.config.paths.exports_dir / "archive",
-        )
+        return self.lab.export(self.view(payload.get("run")), payload)
 
 
 def _make_handler(server: DashboardServer):
+    lab = server.lab
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         # Reap idle keep-alive connections rather than tying up a thread each.
@@ -303,9 +299,10 @@ def _make_handler(server: DashboardServer):
                 return {}
             raw = self.rfile.read(length)
             try:
-                return json.loads(raw.decode("utf-8"))
+                data = json.loads(raw.decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
                 return {}
+            return data if isinstance(data, dict) else {}
 
         # ---------------------------------------------------------- routing
 
@@ -314,49 +311,76 @@ def _make_handler(server: DashboardServer):
             route = parsed.path
             query = parse_qs(parsed.query)
 
+            def text(key: str) -> str | None:
+                return query.get(key, [None])[0] or None
+
             def number(key: str) -> int | None:
-                raw = query.get(key, [None])[0]
-                if raw in (None, "", "latest"):
+                raw = text(key)
+                if raw in (None, "latest"):
                     return None
                 try:
                     return int(raw)
                 except ValueError:
                     return None
 
-            if route in ("/", "/index.html"):
-                self._static("index.html")
-            elif route in ("/style.css", "/app.js"):
-                self._static(route.lstrip("/"))
-            elif route == "/api/status":
-                self._json(server.status())
-            elif route == "/api/events":
-                self._stream()
-            elif route == "/api/curve":
-                self._json(server.curve())
-            elif route == "/api/generations":
-                self._json(server.generations())
-            elif route == "/api/generation":
-                self._json(server.generation(number("n")))
-            elif route == "/api/checkpoints":
-                self._json(server.checkpoints())
-            elif route == "/api/export/preview":
-                self._json(server.export_preview(number("n")))
-            else:
-                self._json({"error": "not found"}, 404)
+            run = text("run")
+            try:
+                if route in ("/", "/index.html"):
+                    self._static("index.html")
+                elif route in ("/style.css", "/app.js"):
+                    self._static(route.lstrip("/"))
+                elif route == "/api/runs":
+                    self._json(server.runs())
+                elif route == "/api/games":
+                    self._json(server.games())
+                elif route == "/api/settings":
+                    self._json(server.settings(text("game")))
+                elif route == "/api/compare":
+                    self._json(server.compare((text("runs") or "").split(",")))
+                elif route == "/api/status":
+                    self._json(server.status(run))
+                elif route == "/api/events":
+                    self._stream()
+                elif route == "/api/curve":
+                    self._json(server.view(run).curve())
+                elif route == "/api/generations":
+                    self._json(server.view(run).generations())
+                elif route == "/api/generation":
+                    self._json(server.view(run).generation(number("n")))
+                elif route == "/api/checkpoints":
+                    self._json(server.view(run).checkpoints())
+                elif route == "/api/export/preview":
+                    self._json(lab.preview(server.view(run), number("n")))
+                elif route == "/api/export/job":
+                    self._json(lab.job(text("id")))
+                else:
+                    self._json({"error": "not found"}, 404)
+            except NoSuchRun:
+                self._json({"error": "no such run", "run": run}, 404)
 
         def do_POST(self) -> None:
             route = urlparse(self.path).path
             payload = self._body()
 
-            if route == "/api/heartbeat":
-                server.trainer.gate.heartbeat()
-                self._json({"ok": True, "gate": server.trainer.gate.state().to_dict()})
-            elif route == "/api/control":
-                self._json(server.control(payload))
-            elif route == "/api/export":
-                self._json(server.export_write(payload))
-            else:
-                self._json({"error": "not found"}, 404)
+            try:
+                if route == "/api/heartbeat":
+                    self._json(server.heartbeat())
+                elif route == "/api/control":
+                    self._json(server.control(payload))
+                elif route == "/api/runs/start":
+                    self._json(server.start_run(payload))
+                elif route == "/api/runs/stop":
+                    self._json(lab.stop(payload.get("run")))
+                elif route == "/api/export/choose":
+                    self._json(lab.choose(server.view(payload.get("run"))))
+                elif route == "/api/export/cancel":
+                    self._json(lab.cancel(payload.get("job")))
+                elif route == "/api/export":
+                    self._json(server.export_write(payload))
+                else:
+                    self._json({"error": "not found"}, 404)
+            except NoSuchRun:
+                self._json({"error": "no such run", "run": payload.get("run")}, 404)
 
         def log_message(self, fmt: str, *args) -> None:
             """Request logging is suppressed; the trainer owns the console."""

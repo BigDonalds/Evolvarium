@@ -33,8 +33,12 @@ class EventLog:
         with self._changed:
             return self._closed
 
-    def add(self, event: Event) -> None:
-        data = json.dumps(event.to_dict(), separators=(",", ":"), default=float)
+    def add(self, event: Event, run: str | None = None) -> None:
+        """Queue `event` for every open stream, naming the run it came from if given."""
+        data = json.dumps(
+            event.to_dict() if run is None else {**event.to_dict(), "run": run},
+            separators=(",", ":"), default=float,
+        )
         with self._changed:
             self._issued += 1
             message = f"id: {self.epoch}-{self._issued}\nevent: {event.kind}\ndata: {data}\n\n"

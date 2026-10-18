@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>evolvarium · population dashboard</title>
+<title>evolvarium</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,47 +12,72 @@
   <div class="identity">
     <div class="mark" aria-hidden="true"></div>
     <div>
-      <h1>snake&#8209;ai</h1>
+      <h1>evolvarium</h1>
       <p class="run" id="run-id">connecting…</p>
     </div>
+  </div>
+
+  <div class="run-picker">
+    <select id="run-select" class="select" title="Run shown" aria-label="Run shown"></select>
+    <button class="btn primary" id="btn-new" hidden>New run</button>
   </div>
 
   <div class="metrics" id="metrics">
     <div class="metric"><span class="k">Generation</span><span class="v" id="m-gen">–</span></div>
     <div class="metric"><span class="k">Best score</span><span class="v accent" id="m-best">–</span></div>
     <div class="metric"><span class="k">Mean score</span><span class="v" id="m-mean">–</span></div>
-    <div class="metric"><span class="k">Feeding</span><span class="v" id="m-eat">–</span></div>
+    <div class="metric"><span class="k">Stagnation</span><span class="v" id="m-stag">–</span></div>
     <div class="metric"><span class="k">Episodes</span><span class="v" id="m-eps">–</span></div>
     <div class="metric"><span class="k">Gen / min</span><span class="v" id="m-rate">–</span></div>
   </div>
 
-  <div class="state" id="state-chip" data-state="running">
-    <span class="dot"></span><span id="state-text">running</span>
+  <div class="state" id="state-chip" data-state="offline">
+    <span class="dot"></span><span id="state-text">connecting</span>
   </div>
 </header>
 
 <main class="layout">
 
+  <section class="panel span-3 empty-state">
+    <h2>No runs yet</h2>
+    <p id="empty-text"></p>
+  </section>
+
   <section class="panel span-2">
     <div class="panel-head">
       <h2>Progress</h2>
       <div class="legend">
-        <span class="key best">best</span>
+        <span class="key best">best episode</span>
         <span class="key mean">mean</span>
-        <span class="key feed">feeding&nbsp;%</span>
+        <span class="tag" id="direction"></span>
       </div>
     </div>
-    <div class="chart-wrap">
-      <svg id="chart" viewBox="0 0 1000 220" preserveAspectRatio="none" role="img"
-           aria-label="Score by generation"></svg>
-      <div class="chart-empty" id="chart-empty">waiting for the first generation…</div>
+    <div class="chart-wrap" id="chart-wrap">
+      <svg id="chart" role="img" aria-label="Score by generation"></svg>
+      <div class="chart-guide" id="chart-guide" hidden></div>
+      <div class="chart-readout" id="chart-readout" hidden></div>
+      <div class="chart-empty">waiting for the first generation…</div>
+    </div>
+    <div class="minis">
+      <div class="mini">
+        <div class="mini-head"><span>Mean steps</span><span class="mini-v" id="mini-mean_steps-v">–</span></div>
+        <svg class="mini-chart" id="mini-mean_steps" aria-hidden="true"></svg>
+      </div>
+      <div class="mini">
+        <div class="mini-head"><span>Diversity</span><span class="mini-v" id="mini-diversity-v">–</span></div>
+        <svg class="mini-chart" id="mini-diversity" aria-hidden="true"></svg>
+      </div>
+      <div class="mini">
+        <div class="mini-head"><span>Mutation rate</span><span class="mini-v" id="mini-mutation_rate-v">–</span></div>
+        <svg class="mini-chart" id="mini-mutation_rate" aria-hidden="true"></svg>
+      </div>
     </div>
   </section>
 
   <section class="panel">
     <div class="panel-head"><h2>Training control</h2></div>
     <div class="control">
-      <p class="hold-status" id="hold-status">Training runs freely until the dashboard is open.</p>
+      <p class="hold-status" id="hold-status">Waiting for the run.</p>
       <div class="button-row">
         <button class="btn primary" id="btn-continue">Continue</button>
         <button class="btn" id="btn-continue-5">Continue ×5</button>
@@ -61,10 +86,13 @@
         <button class="btn" id="btn-hold" aria-pressed="false">Hold each generation</button>
         <button class="btn" id="btn-free">Run free</button>
       </div>
-      <p class="hint">
-        While this page is open, evolution pauses at each generation boundary so a
-        generation cannot be replaced before you have looked at it. Close the tab
-        and training resumes on its own.
+      <div class="button-row">
+        <button class="btn danger" id="btn-stop" hidden>Stop run</button>
+      </div>
+      <p class="hint" id="control-hint">
+        While this page shows the live run, evolution pauses at each generation
+        boundary so a generation cannot be replaced before you have looked at it.
+        Close the tab or show another run and training resumes on its own.
       </p>
     </div>
   </section>
@@ -76,11 +104,11 @@
         <button class="btn icon" id="gen-first" title="First generation">⏮</button>
         <button class="btn icon" id="gen-prev" title="Previous generation">◀</button>
         <label class="scrub">
-          <input type="range" id="gen-range" min="0" max="0" value="0">
+          <input type="range" id="gen-range" min="0" max="0" value="0" aria-label="Generation">
         </label>
         <button class="btn icon" id="gen-next" title="Next generation">▶</button>
         <button class="btn icon" id="gen-last" title="Latest generation">⏭</button>
-        <input type="number" id="gen-jump" class="jump" min="0" placeholder="gen">
+        <input type="number" id="gen-jump" class="jump" min="0" placeholder="gen" aria-label="Go to generation">
         <button class="btn" id="btn-live" aria-pressed="true">Follow latest</button>
       </div>
     </div>
@@ -90,7 +118,7 @@
     <div class="playback">
       <button class="btn icon" id="btn-play" title="Play or pause">⏸</button>
       <button class="btn icon" id="btn-restart" title="Restart replay">↺</button>
-      <input type="range" id="frame-range" min="0" max="0" value="0">
+      <input type="range" id="frame-range" min="0" max="0" value="0" aria-label="Frame">
       <span class="frame-label" id="frame-label">0 / 0</span>
       <select id="speed" class="select" title="Replay speed">
         <option value="4">0.25×</option>
@@ -102,7 +130,7 @@
       <select id="sort" class="select" title="Grid order">
         <option value="fitness">by fitness</option>
         <option value="score">by score</option>
-        <option value="steps">by survival</option>
+        <option value="steps">by steps</option>
       </select>
       <select id="limit" class="select" title="Agents shown">
         <option value="24">24 agents</option>
@@ -122,20 +150,58 @@
       <span class="tag" id="export-availability"></span>
     </div>
     <div class="export">
-      <div class="export-controls">
-        <label class="field">
-          <span>Generation to export</span>
-          <input type="number" id="export-gen" min="0" placeholder="latest">
+      <div class="picks" role="radiogroup" aria-label="Genome to export">
+        <label class="pick">
+          <input type="radio" name="pick" value="average" checked>
+          <span>
+            <strong>Best average</strong>
+            <small>Plays every genome the run holds on fresh games, then the leaders
+              many more times, and keeps the best mean. The export command does
+              the same.</small>
+          </span>
         </label>
-        <button class="btn" id="btn-preview">Calculate</button>
+        <label class="pick">
+          <input type="radio" name="pick" value="champion">
+          <span>
+            <strong>Champion</strong>
+            <small>The genome behind the run's best score as of a generation. One
+              lucky game can put a genome there.</small>
+          </span>
+        </label>
+      </div>
+
+      <div class="export-controls">
+        <div class="export-controls" id="average-controls">
+          <button class="btn" id="btn-choose">Choose</button>
+        </div>
+        <div class="export-controls" id="champion-controls" hidden>
+          <label class="field">
+            <span>Generation</span>
+            <input type="number" id="export-gen" min="0" placeholder="latest">
+          </label>
+          <button class="btn" id="btn-preview">Calculate</button>
+        </div>
         <button class="btn primary" id="btn-export" disabled>Export model</button>
       </div>
+
+      <div class="job" id="job" hidden>
+        <div class="job-line">
+          <span id="job-stage"></span>
+          <span class="job-count" id="job-count"></span>
+        </div>
+        <div class="bar"><span id="job-bar"></span></div>
+        <div class="job-line">
+          <span class="job-time" id="job-time"></span>
+          <button class="btn" id="job-cancel">Cancel</button>
+        </div>
+      </div>
+
       <div class="export-report" id="export-report">
         <p class="hint">
-          Training writes compact <code>.npz</code> checkpoints. Choose a generation
-          and calculate to see exactly what the standalone model would contain before
-          anything is written to disk. The model is a JSON file that
-          <code>player.py</code> runs with plain Python.
+          Training writes compact <code>.npz</code> checkpoints. Choose a genome to
+          see exactly what the standalone model would contain before anything is
+          written to disk. The model is a JSON file that <code>player.py</code>
+          runs with plain Python.
         </p>
       </div>
     </div>
@@ -144,6 +210,25 @@
   <section class="panel">
     <div class="panel-head"><h2>Run detail</h2></div>
     <dl class="detail" id="run-detail"></dl>
+  </section>
+
+  <section class="panel span-3">
+    <div class="panel-head">
+      <h2>Compare runs</h2>
+      <span class="tag" id="compare-note"></span>
+    </div>
+    <div class="compare">
+      <div class="compare-pick" id="compare-pick"></div>
+      <div class="compare-main">
+        <div class="chart-wrap" id="compare-wrap">
+          <svg id="compare-chart" role="img" aria-label="Best score so far, by run"></svg>
+          <div class="chart-empty">Tick runs to set their best scores side by side.</div>
+        </div>
+        <div class="table-wrap">
+          <table class="compare-table" id="compare-table"></table>
+        </div>
+      </div>
+    </div>
   </section>
 
 </main>
@@ -155,6 +240,34 @@
   </div>
   <div class="sheet-body" id="sheet-body"></div>
 </div>
+
+<aside class="drawer" id="drawer" hidden aria-labelledby="drawer-title">
+  <div class="sheet-head">
+    <h3 id="drawer-title">New run</h3>
+    <button class="btn icon" id="drawer-close" title="Close">✕</button>
+  </div>
+  <form class="drawer-form" id="new-run" autocomplete="off" novalidate>
+    <div class="drawer-scroll">
+      <div class="form-row">
+        <label class="field"><span>Game</span><select id="new-game" class="select"></select></label>
+        <label class="field" id="field-generations"><span>Generations</span>
+          <input type="text" id="new-generations" inputmode="numeric" placeholder="until stopped"></label>
+        <label class="field" id="field-seed"><span>Seed</span>
+          <input type="text" id="new-seed" inputmode="numeric" placeholder="random"></label>
+      </div>
+      <p class="hint">
+        Settings start where this dashboard was opened. Changed ones are marked,
+        and only those are sent.
+      </p>
+      <ul class="problems" id="new-problems" hidden></ul>
+      <div class="settings" id="new-settings"></div>
+    </div>
+    <div class="drawer-foot">
+      <button type="button" class="btn" id="new-reset">Reset</button>
+      <button type="submit" class="btn primary" id="new-start">Start run</button>
+    </div>
+  </form>
+</aside>
 
 <div class="toast" id="toast" hidden></div>
 

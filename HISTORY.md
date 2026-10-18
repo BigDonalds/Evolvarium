@@ -10,6 +10,80 @@ directly.
 
 ---
 
+## Runs on the page - start, stop, compare and choose for any game
+
+The dashboard came with `train` and showed the one run that process trained. It
+knew Snake by name: the title read snake-ai, one figure was "Feeding", and a
+curve was the share of genomes that scored, which says nothing about a game that
+wants its score low. Starting a run, changing its settings or comparing two
+meant the command line, and the export panel wrote the stored champion while
+`export --pick best-average` could choose the steadiest genome instead.
+
+**Serve.** `python -m evolvarium serve` opens the dashboard on every run in the
+runs directory and trains nothing until asked. A list at the top picks the run
+shown, the one training here or any saved one. A saved run is read from its
+history and checkpoints and answers with the same fields as a live one, so the
+page draws both alike, and a run whose game no longer loads is still listed with
+the reason. Events carry the id of the run they came from. `train` still opens a
+dashboard on its own run, and that one cannot start others.
+
+**Starting and stopping.** New run opens a form built from the game's settings:
+the names `train --set` takes, grouped by section, with each value's kind and,
+where the set is fixed, its choices. Changed settings are marked and counted.
+The server checks the form as `train` checks its command line and returns every
+problem at once, and the page marks each row named. The server, paths and
+held_out sections are not in the form, since every run started from one
+dashboard shares them. A run started without a seed is given one and records
+it. One run trains at a time. Stop takes two clicks and ends the run after the
+generation in progress, and a run that has ended is read back from disk.
+
+**What any game reports.** The main chart plots the best and mean score with a
+dot at each record, and the pointer reads out both for the generation under it.
+Three small charts follow mean episode length, diversity and the
+mutation rate, which every game has, and the page says whether a higher or a
+lower score is better. No file of the page names a game. `app.js` grew from 749
+lines to 1,951, `index.html` from 163 to 276 and `style.css` from 488 to 791. The
+server answers 19 routes, up from 10.
+
+**Compare.** Up to eight runs are set side by side. Their best-so-far curves
+share one chart, each in its own colour, and a table gives each run's settings,
+game, seed, generations, best score and the generation it came at, the mean of
+its last ten generations, episodes, speed and time. The best of each game is
+marked, since scores of different games do not compare. A run still training is
+fetched again as it moves.
+
+**Choosing by average.** The export panel picks as `export --pick best-average`
+does. The stored champion, every member of the population and every past
+champion play 8 games, then the best five and the stored champion play 40 more,
+and the best mean over all 48 is exported with a note of how it was chosen. The
+games run as a job that reports each one, can be cancelled, and runs one at a
+time. On a population of 60 on a 10 by 10 board with 4 workers, 65 candidates
+took 43 s for 520 screening games and 240 final games. Population member 41 won
+with a mean of 18.10, against 15.35 for the stored champion.
+
+**Past champions.** Each archived generation holds the champion as it stood
+then, and the champion changes only on a record. The choice opens the first
+generation still on disk and the records, not every archived generation. On a
+150-generation run that is 15 files instead of 150 and 0.02 s instead of
+0.18 s, for the same 13 distinct champions.
+
+**Another process.** A saved run written to in the last two minutes may be
+training in another process, so the page keeps reading it and says when it was
+written. A run that ended in this dashboard is known to be done unless something
+writes to it afterwards.
+
+**Checking it.** `tests/test_server.py` asks the server what the page asks:
+the list of runs, the form and the sections it leaves out, every problem with a
+new run at once, a run started from the page training and then read from disk
+with its seed and settings, the dashboard of one run starting no others, only
+the live run being held and stopped, runs side by side, a choice by average
+matching the command line's, cancelling a choice and refusing a second, an
+export as of a generation, a saved run answering with a live run's fields, and a
+run whose game no longer loads. `tests/test_held_out.py` checks that the records
+alone give every past champion and that progress is told of every game and can
+end a choice. In the browser every part above was used on Snake runs started
+from the page, with no errors in the console.
+
 ## Scenes - a game draws its own frames, the dashboard draws any game
 
 At the baseline the dashboard drew Snake and nothing else. A replay was Snake's

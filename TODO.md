@@ -10,9 +10,6 @@ Items still open at the baseline are in Snake-AI's
 
 - **`scored%`** counts genomes whose best episode scored above zero, which says
   nothing about a game that wants its score low.
-- **The dashboard still names Snake.** It draws any game's scene, but its title
-  reads snake-ai, one of its figures is "Feeding", and a chart curve is the
-  share of genomes that scored.
 
 ## Engine
 

@@ -48,13 +48,15 @@ class EvaluationPool:
         return self._executor is not None
 
     def map(
-        self, tasks: Iterable[tuple], run: Callable[[tuple], Any] = run_task
+        self, tasks: Iterable[tuple], run: Callable[[tuple], Any] = run_task,
+        played: Callable[[], None] | None = None,
     ) -> list[Any]:
         """Score every task, returning results in the order given.
 
         `run` is called on each task inside a worker. It has to be a module-level
         function so the worker can import it, and anything other than `run_task`
-        is there to wrap it: the profiler times tasks this way.
+        is there to wrap it: the profiler times tasks this way. `played`, if
+        given, is called as each result arrives, in order.
 
         Order matters: the parent applies results back onto its own list of
         members positionally, so the mapping must not depend on which worker
@@ -76,7 +78,14 @@ class EvaluationPool:
         tasks = list(tasks)
         if self._executor is None:
             raise RuntimeError("pool is not active; the caller should run serially")
-        return list(self._executor.map(run, tasks, chunksize=1))
+        results = self._executor.map(run, tasks, chunksize=1)
+        if played is None:
+            return list(results)
+        collected = []
+        for result in results:
+            collected.append(result)
+            played()
+        return collected
 
     def close(self) -> None:
         if self._executor is not None:

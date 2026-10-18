@@ -81,7 +81,7 @@ def summarise_training(summaries: list[dict], generation: int,
             "generations": 0, "episodes": 0, "compute_seconds": 0.0,
             "best_score": None, "best_fitness": 0.0, "best_generation": None,
             "mean_score_final": 0.0, "scoring_fraction_final": 0.0,
-            "records_set": 0, "ends": {},
+            "mean_steps_final": 0.0, "records_set": 0, "ends": {},
         }
 
     scored = [e for e in window if e.get("max_episode_score") is not None] or window

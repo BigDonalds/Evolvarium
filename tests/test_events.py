@@ -323,7 +323,10 @@ def test_closing_the_log_wakes_a_waiting_reader():
 def test_the_dashboard_streams_events(monkeypatch):
     monkeypatch.setattr(export_model, "preload", lambda: None)
     trainer = types.SimpleNamespace(events=EventBus())
-    server = DashboardServer(trainer, "127.0.0.1", 0)
+    lab = types.SimpleNamespace(
+        listen=lambda hear: trainer.events.subscribe(lambda event: hear("streamed", event))
+    )
+    server = DashboardServer(lab, "127.0.0.1", 0)
     assert server.start()
     port = server._httpd.server_address[1]
 
@@ -344,7 +347,7 @@ def test_the_dashboard_streams_events(monkeypatch):
         received = [next(stream) for _ in range(5)]
         assert received[1:4] == [
             f"id: {server.events.epoch}-1", "event: note",
-            'data: {"kind":"note","message":"hello"}',
+            'data: {"kind":"note","message":"hello","run":"streamed"}',
         ]
         connection.close()
 

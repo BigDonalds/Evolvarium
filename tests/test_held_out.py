@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import gzip
 import json
 import math
 from pathlib import Path
@@ -256,6 +257,65 @@ def test_candidates_cover_the_champion_the_population_and_past_champions(tiny_co
     assert sum(source.startswith("population member") for source in sources) >= 1
     keys = [genome.tobytes() for _, genome in candidates]
     assert len(keys) == len(set(keys)), "the same genome must not be scored twice"
+
+
+def test_past_champions_are_found_without_opening_every_generation(tiny_config):
+    config = dataclasses.replace(
+        tiny_config, evolution=dataclasses.replace(tiny_config.evolution, workers=1)
+    )
+    trainer = Trainer(config, seed=21, run_id="run-p", max_generations=8)
+    trainer.start()
+    trainer.join()
+    trainer.stop()
+
+    every = []
+    for replay in sorted((trainer.run_dir / "replays").glob("gen_*.json.gz")):
+        with gzip.open(replay, "rt", encoding="utf-8") as handle:
+            genome = json.loads(handle.read()).get("best_genome")
+        if genome:
+            every.append(np.array(genome, dtype=np.float32).tobytes())
+    found = [genome.tobytes() for _, genome in held_out.archived_champions(trainer.run_dir)]
+
+    assert len(every) == 8
+    assert set(found) == set(every)
+    assert len(found) == len(set(every))
+
+
+def test_progress_is_told_of_every_game_in_both_stages(tiny_config):
+    run = make_run(tiny_config, 22, "run-q")
+    candidates = held_out.candidates_from(latest(run))
+    heard = []
+
+    held_out.choose_by_average(
+        candidates, held_out.run_context(latest(run)), workers=1,
+        progress=lambda *step: heard.append(step), screen_games=2, finalists=2, final_games=3,
+    )
+
+    screen = [step for step in heard if step[0] == "screen"]
+    final = [step for step in heard if step[0] == "final"]
+    assert heard == screen + final
+    assert [played for _, played, _ in screen] == [0, *range(1, len(candidates) * 2 + 1),
+                                                   len(candidates) * 2]
+    total = final[0][2]
+    assert total in (6, 9) and final[-1] == ("final", total, total)
+
+
+def test_progress_can_end_a_choice():
+    candidates = [("stored champion", _tagged(0.0)), ("population member 0", _tagged(1.0))]
+    score = _scripted({0.0: (1.0, 1.0), 1.0: (2.0, 2.0)})
+    heard = []
+
+    def progress(stage, played, games):
+        heard.append((stage, played, games))
+        if stage == "final":
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        held_out.choose_by_average(candidates, context=None, workers=1, score=score,
+                                   progress=progress)
+    screen_games = 2 * held_out.SCREEN_GAMES
+    assert heard == [("screen", 0, screen_games), ("screen", screen_games, screen_games),
+                     ("final", 0, 2 * held_out.FINAL_GAMES)]
 
 
 def test_export_can_pick_by_average(tiny_config, monkeypatch):

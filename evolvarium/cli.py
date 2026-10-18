@@ -7,6 +7,7 @@ import contextlib
 import dataclasses
 import json
 import sys
+import time
 import webbrowser
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from .settings import SettingsError
 from .telemetry.history import lineage_summaries
 from .telemetry.reporter import ConsoleReporter
 from .trainer import Trainer
+from .web.runs import Lab
 from .web.server import DashboardServer
 
 # Flags for the settings a sweep changes most. Each is the same as --set on the
@@ -106,6 +108,46 @@ def _configure(args: argparse.Namespace) -> Config:
     return config
 
 
+def _refused(verb: str, error: Exception) -> int:
+    print(f"  cannot {verb}:")
+    for problem in getattr(error, "problems", [str(error)]):
+        print(f"    {problem}")
+    return 1
+
+
+def _banner(reporter: ConsoleReporter, trainer: Trainer, url: str) -> None:
+    game = trainer.population.game
+    reporter.banner(
+        run_id=trainer.run_id,
+        generation=trainer.population.generation,
+        population=len(trainer.population.members),
+        game=trainer.config.game,
+        encoding=str(game.model_inputs()["encoding"]),
+        inputs=game.observation.size,
+        genome=trainer.population.architecture.genome_size,
+        url=url,
+        workers=trainer.workers,
+    )
+
+
+def _wind_down(trainer: Trainer, drop) -> None:
+    """Finish the generation in progress after a Ctrl+C, or `drop()` it after a second."""
+    print()
+    trainer.events.publish(Note(
+        "interrupted, finishing the current generation (Ctrl+C again to drop it)"
+    ))
+    trainer.request_stop()
+    try:
+        trainer.join()
+    except KeyboardInterrupt:
+        drop()
+        # The trainer ends once the workers finish the genomes they are
+        # scoring. A third Ctrl+C stops waiting for it here, though the
+        # process still lets the workers finish as it exits.
+        with contextlib.suppress(KeyboardInterrupt):
+            trainer.join()
+
+
 def _latest_checkpoint(runs_dir: Path) -> Path | None:
     candidates = sorted(runs_dir.glob("*/checkpoints/latest.npz"), key=lambda p: p.stat().st_mtime)
     return candidates[-1] if candidates else None
@@ -115,10 +157,7 @@ def command_train(args: argparse.Namespace) -> int:
     try:
         config = _configure(args)
     except (SettingsError, games.UnknownGame) as error:
-        print("  cannot train:")
-        for problem in getattr(error, "problems", [str(error)]):
-            print(f"    {problem}")
-        return 1
+        return _refused("train", error)
 
     resume_from: Path | None = None
     if args.resume:
@@ -145,21 +184,13 @@ def command_train(args: argparse.Namespace) -> int:
         print(f"  cannot resume: {error}")
         return 1
 
-    server = DashboardServer(trainer, config.server.host, config.server.port)
+    # This dashboard shows the one run, alongside the runs already on disk.
+    lab = Lab(config, can_start=False)
+    lab.adopt(trainer)
+    server = DashboardServer(lab, config.server.host, config.server.port)
     served = server.start() if not args.headless else False
 
-    game = trainer.population.game
-    reporter.banner(
-        run_id=trainer.run_id,
-        generation=trainer.population.generation,
-        population=len(trainer.population.members),
-        game=trainer.config.game,
-        encoding=str(game.model_inputs()["encoding"]),
-        inputs=game.observation.size,
-        genome=trainer.population.architecture.genome_size,
-        url=server.url if served else "disabled",
-        workers=trainer.workers,
-    )
+    _banner(reporter, trainer, server.url if served else "disabled")
     if served and args.open:
         webbrowser.open(server.url)
 
@@ -169,22 +200,56 @@ def command_train(args: argparse.Namespace) -> int:
     try:
         trainer.join()
     except KeyboardInterrupt:
-        print()
-        events.publish(Note(
-            "interrupted, finishing the current generation (Ctrl+C again to drop it)"
-        ))
-        trainer.request_stop()
-        try:
-            trainer.join()
-        except KeyboardInterrupt:
-            trainer.stop(timeout=0)
-            # The trainer ends once the workers finish the genomes they are
-            # scoring. A third Ctrl+C stops waiting for it here, though the
-            # process still lets the workers finish as it exits.
-            with contextlib.suppress(KeyboardInterrupt):
-                trainer.join()
+        _wind_down(trainer, lambda: trainer.stop(timeout=0))
 
     trainer.stop()
+    lab.close()
+    server.stop()
+    return 0
+
+
+def command_serve(args: argparse.Namespace) -> int:
+    assignments = []
+    if args.port is not None:
+        assignments.append(("server.port", args.port))
+    if args.workers is not None:
+        assignments.append(("evolution.workers", args.workers))
+    if args.no_hold:
+        assignments.append(("server.hold_when_viewing", False))
+    assignments.extend(args.set or [])
+    try:
+        config = settings.apply(_game_config(args.game), assignments)
+        settings.check(config, named=[name for name, _ in assignments], dashboard=True)
+    except (SettingsError, games.UnknownGame) as error:
+        return _refused("serve", error)
+
+    server: DashboardServer | None = None
+
+    def announce(trainer: Trainer) -> None:
+        reporter = ConsoleReporter(every=args.report_every)
+        reporter.attach(trainer.events)
+        _banner(reporter, trainer, server.url)
+
+    lab = Lab(config, can_start=True, announce=announce)
+    server = DashboardServer(lab, config.server.host, config.server.port)
+    if not server.start():
+        return 1
+    print(f"  dashboard     {server.url}")
+    print(f"  runs          {config.paths.runs_dir}")
+    print("  runs started on the page train here; Ctrl+C ends the one training and quits")
+    print()
+    if args.open:
+        webbrowser.open(server.url)
+
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        live = lab.live
+        if live is not None:
+            _wind_down(live.trainer, lambda: lab.close(timeout=0))
+
+    lab.close()
     server.stop()
     return 0
 
@@ -472,6 +537,27 @@ def build_parser() -> argparse.ArgumentParser:
                             "(server.hold_when_viewing=false)")
     train.add_argument("--open", action="store_true", help="open the dashboard in a browser")
     train.set_defaults(func=command_train)
+
+    serve = sub.add_parser(
+        "serve", help="open the dashboard on every run, to start, watch and compare runs"
+    )
+    serve.add_argument("--game", default=None,
+                       help=f"the game the page offers first, default {CONFIG.game}")
+    serve.add_argument(
+        "--set", action="extend", nargs="+", type=_assignment, metavar="NAME=VALUE",
+        help="settings every run started on the page begins from; the page can change "
+             "all but the server, paths and held_out ones",
+    )
+    serve.add_argument("--port", type=int, default=None, help="dashboard port (server.port)")
+    serve.add_argument("--workers", type=int, default=None,
+                       help="evaluation worker processes for the runs started here "
+                            "(evolution.workers)")
+    serve.add_argument("--report-every", type=int, default=1)
+    serve.add_argument("--no-hold", action="store_true",
+                       help="never pause a run for the dashboard between generations "
+                            "(server.hold_when_viewing=false)")
+    serve.add_argument("--open", action="store_true", help="open the dashboard in a browser")
+    serve.set_defaults(func=command_serve)
 
     inspect = sub.add_parser("inspect", help="describe a checkpoint")
     inspect.add_argument("path", nargs="?", default=None)

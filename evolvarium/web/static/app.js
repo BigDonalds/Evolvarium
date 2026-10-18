@@ -1,32 +1,50 @@
 /* evolvarium dashboard
-   Vanilla ES modules-free script: no build step, no dependencies.
+   No build step and no dependencies. Nothing here knows a game: what to draw
+   comes from the run's scene, and every number from the run's own records.
 
-   Three behaviours drive most of the design.
+   Runs: the page shows one run at a time, picked from every run in the runs
+   directory. The one training in the server's process is live; the rest are
+   read back from disk, finished or training in another process. A dashboard
+   opened with `serve` can also start runs, one at a time.
 
-   Presence: the trainer holds at a generation boundary while this page is open,
-   so a generation cannot be replaced before it has been looked at. That hold is
-   a lease, refreshed by the heartbeat below; if this page stops sending them the
-   trainer resumes on its own rather than waiting forever.
+   Presence: the live run holds at a generation boundary while this page shows
+   it, so a generation cannot be replaced before it has been looked at. That
+   hold is a lease, refreshed by the heartbeat below. Only a page showing the
+   live run sends them, so closing the tab or showing another run lets the
+   trainer resume on its own rather than wait forever.
 
    Pinning: selecting a generation detaches the view from the live edge. New
    generations keep arriving and the scrubber range grows, but the displayed
    generation does not change until "Follow latest" is turned back on.
 
-   Events: the trainer announces each generation, record, hold and note on
-   /api/events as it happens, and the page reacts to those. Status is still
-   polled, slowly, for the clocks and rates that change all the time, and at the
-   old rate whenever the stream is down. */
+   Events: the live run announces each generation, record, hold and note on
+   /api/events, each tagged with the run, and the page reacts to those of the
+   run it shows. Status is still polled, slowly, for the clocks and rates that
+   change all the time, and at the old rate whenever the stream is down. */
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const HEARTBEAT_MS = 3000;
 const STATUS_MS = 1200;        // polling while the event stream is down
 const STATUS_LIVE_MS = 5000;   // polling while events arrive on their own
+const SAVED_MS = 5000;         // polling a run read from disk
+const RUNS_MS = 10000;
+const JOB_MS = 500;
+const RECENT_SECONDS = 120;    // a run written to this recently may still be training
+const COMPARE_AT_MOST = 8;
 const TICK_MS = 90;
 
 const state = {
+  runs: [],              // every run, newest first
+  liveRun: null,         // the run training in the server's process
+  canStart: false,
+  defaultGame: null,
+  run: null,             // the run shown
+  chosen: false,         // picked on the page, rather than the newest or live one
+  wanted: null,          // run named in the address, looked for once
   status: null,
   live: false,           // event stream connected
   curve: null,           // chart series, extended as generations arrive
+  chartScale: null,      // how the main chart maps generations to pixels
   generation: null,      // loaded GenerationRecord
   following: true,
   pinned: null,          // generation number when not following
@@ -42,7 +60,15 @@ const state = {
   scene: null,           // what the game draws, from the generation
   paint: null,           // markup for one frame of that scene
   sheetAgent: null,      // agent open in the side sheet
-  exportReport: null,
+  exportPick: "average",
+  exportHint: "",        // the export panel's text before there is a report
+  championReport: null,  // export preview of the champion
+  job: null,             // a choice by average for the run shown
+  gamesLoaded: false,
+  settings: { game: null, rows: [], inputs: new Map() },
+  compare: new Map(),    // run id -> colour slot
+  compareTouched: false, // until then the list follows the run shown
+  compared: null,        // the last comparison fetched
   tickAccumulator: 0,
   lastTick: 0,
 };
@@ -67,6 +93,24 @@ async function postJSON(url, body) {
   return response.json();
 }
 
+/* `path` asked of the run shown, with `params` that have a value. */
+function url(path, params = {}) {
+  const query = new URLSearchParams();
+  if (state.run) query.set("run", state.run);
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null && value !== "") query.set(key, String(value));
+  }
+  const text = query.toString();
+  return text ? `${path}?${text}` : path;
+}
+
+/* An answer about the run shown, or null when another run was shown before it came. */
+async function runJSON(path, params) {
+  const run = state.run;
+  const data = await getJSON(url(path, params));
+  return state.run === run ? data : null;
+}
+
 let toastTimer = null;
 function toast(message, kind = "") {
   const node = $("toast");
@@ -79,10 +123,20 @@ function toast(message, kind = "") {
 
 /* ---------------------------------------------------------------- formatting */
 
+const fixed = (v, d) =>
+  Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+
 const fmt = {
   int: (n) => (n == null ? "–" : Math.round(n).toLocaleString()),
   dec: (n, d = 2) => (n == null ? "–" : Number(n).toFixed(d)),
   pct: (n) => (n == null ? "–" : `${(n * 100).toFixed(1)}%`),
+  // A score as the game keeps it: whole when it is whole.
+  num: (n) => {
+    if (n == null || !Number.isFinite(Number(n))) return "–";
+    const v = Number(n);
+    if (Number.isInteger(v)) return v.toLocaleString();
+    return fixed(v, Math.abs(v) >= 100 ? 1 : 2);
+  },
   bytes: (n) => {
     if (n == null) return "–";
     if (n < 1024) return `${n} B`;
@@ -99,24 +153,172 @@ const fmt = {
     if (m) return `${m}m ${String(sec).padStart(2, "0")}s`;
     return `${sec}s`;
   },
+  ago: (s) => {
+    if (s == null) return "–";
+    if (s < 60) return `${Math.round(s)}s ago`;
+    if (s < 3600) return `${Math.round(s / 60)}m ago`;
+    if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+    return `${Math.round(s / 86400)}d ago`;
+  },
+  // "2026-10-15T09:39:28" as "2026-10-15 09:39".
+  when: (iso) => (iso ? String(iso).replace("T", " ").slice(0, 16) : "–"),
 };
+
+function escape(text) {
+  return String(text).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+const recent = (seconds) => seconds != null && seconds < RECENT_SECONDS;
+// A saved run that another process may still be training. One that ended in
+// this dashboard is known to be done.
+const writing = (run) =>
+  run != null && !run.live && !run.ended_here && recent(run.updated_seconds_ago);
+const lowerIsBetter = (direction) => direction === "lower";
+const betterWord = (direction) => (lowerIsBetter(direction) ? "lower is better" : "higher is better");
+
+/* ---------------------------------------------------------------- runs */
+
+async function loadRuns() {
+  let data;
+  try {
+    data = await getJSON("/api/runs");
+  } catch {
+    setStateChip("offline", "disconnected");
+    return;
+  }
+  state.runs = data.runs || [];
+  state.liveRun = data.live;
+  state.canStart = Boolean(data.can_start);
+  state.defaultGame = data.game;
+  $("btn-new").hidden = !state.canStart;
+
+  const known = new Set(state.runs.map((run) => run.run_id));
+  if (state.wanted) {
+    const wanted = state.wanted;
+    state.wanted = null;
+    if (known.has(wanted)) show(wanted, true);
+  }
+  // Until a run is picked the page shows the live one, or else the newest.
+  if (!state.chosen || !known.has(state.run)) {
+    const pick = state.liveRun || (state.runs.length ? state.runs[0].run_id : null);
+    show(pick, false);
+  }
+  renderRunPicker();
+  renderEmpty();
+  refreshCompared();
+}
+
+function runText(run) {
+  const where = run.live ? "training here"
+    : writing(run) ? "recently written"
+      : `${fmt.int(run.generations)} gens`;
+  return `${run.run_id} · ${run.game} · ${where}`;
+}
+
+function renderRunPicker() {
+  const select = $("run-select");
+  const markup = state.runs
+    .map((run) => `<option value="${escape(run.run_id)}">${escape(runText(run))}</option>`)
+    .join("");
+  // Rebuilding the list while it is open would close it.
+  if (select.dataset.markup !== markup) {
+    select.innerHTML = markup;
+    select.dataset.markup = markup;
+  }
+  select.value = state.run || "";
+  select.hidden = !state.runs.length;
+}
+
+/* Show `runId`, starting over everything that belongs to the run. */
+function show(runId, chosen) {
+  state.chosen = Boolean(chosen && runId);
+  const address = new URL(window.location.href);
+  if (state.chosen) address.searchParams.set("run", runId);
+  else address.searchParams.delete("run");
+  window.history.replaceState(null, "", address);
+  if (runId === state.run) return;
+
+  state.run = runId;
+  state.status = null;
+  closeSheet();
+  state.curve = null;
+  state.chartScale = null;
+  state.generation = null;
+  state.following = true;
+  state.pinned = null;
+  state.bounds = { first: 0, last: 0, available: [] };
+  state.agents = [];
+  state.shown = [];
+  state.scene = null;
+  state.paint = null;
+  state.frame = 0;
+  state.maxFrames = 0;
+  state.championReport = null;
+  state.job = null;
+  clearTimeout(jobTimer);
+  disarmStop();
+
+  $("grid").innerHTML = "";
+  $("gen-summary").innerHTML = "";
+  $("frame-range").max = "0";
+  for (const id of ["m-gen", "m-best", "m-mean", "m-stag", "m-eps", "m-rate"]) $(id).textContent = "–";
+  $("run-detail").innerHTML = "";
+  $("direction").textContent = "";
+  renderChart();
+  renderExport();
+  renderJob();
+  syncScrubber();
+  renderRunPicker();
+
+  document.body.classList.toggle("no-run", !runId);
+  if (!runId) {
+    document.title = "evolvarium";
+    return;
+  }
+  $("run-id").textContent = runId;
+  heartbeat();
+  pollStatus();
+  loadCurve();
+  attachJob();
+}
+
+function renderEmpty() {
+  const empty = !state.runs.length;
+  document.body.classList.toggle("no-run", empty);
+  if (!empty) return;
+  $("run-id").textContent = "no runs";
+  setStateChip("offline", "no runs");
+  $("empty-text").innerHTML = state.canStart
+    ? "Start one with <strong>New run</strong>. Runs other processes train in the same runs directory appear here too."
+    : "Runs appear here once one is started with <code>python -m evolvarium train</code>.";
+}
 
 /* ---------------------------------------------------------------- status */
 
 async function pollStatus() {
+  if (!state.run) return;
   try {
-    const status = await getJSON("/api/status");
+    const status = await runJSON("/api/status");
+    if (!status) return;
     state.status = status;
     renderStatus(status);
     renderRunDetail(status);
+    renderControl(status);
 
-    const gens = await getJSON("/api/generations");
+    const gens = await runJSON("/api/generations");
+    if (!gens) return;
     state.bounds = gens;
     syncScrubber();
 
-    if (state.following && gens.last !== (state.generation && state.generation.generation)) {
+    const shown = state.generation && state.generation.generation;
+    if (state.following && gens.available.length && gens.last !== shown) {
       await loadGeneration(null);
     }
+    // A run read from disk sends no events, so its curve is read again when
+    // it has grown.
+    const newest = status.last_generation ? status.last_generation.generation : null;
+    if (!status.live && state.curve && newest != null && newest !== curveEnd()) loadCurve();
   } catch {
     setStateChip("offline", "disconnected");
   }
@@ -129,34 +331,63 @@ function setStateChip(kind, text) {
 }
 
 function renderStatus(status) {
-  $("run-id").textContent = status.run_id;
+  $("run-id").textContent = `${status.game} · ${status.run_id}`;
+  document.title = `${status.run_id} · evolvarium`;
   $("m-gen").textContent = fmt.int(status.generation);
-  $("m-best").textContent = fmt.int(status.best_ever_score);
+  $("m-best").textContent = fmt.num(status.best_ever_score);
+  $("m-stag").textContent = fmt.int(status.stagnation);
   $("m-eps").textContent = fmt.int(status.total_episodes);
   $("m-rate").textContent = fmt.dec(status.generations_per_minute, 1);
-
   const last = status.last_generation;
-  $("m-mean").textContent = last ? fmt.dec(last.mean_score, 3) : "–";
-  $("m-eat").textContent = last ? fmt.pct(last.scoring_fraction) : "–";
+  $("m-mean").textContent = last ? fmt.num(last.mean_score) : "–";
+  $("direction").textContent = betterWord(status.direction);
 
   const gate = status.gate || {};
-  const holdBtn = $("btn-hold");
-  holdBtn.setAttribute("aria-pressed", String(!!gate.hold_enabled));
-
-  if (gate.holding) {
+  if (status.problem) {
+    setStateChip("problem", "cannot load");
+  } else if (!status.live) {
+    if (writing(status)) {
+      setStateChip("elsewhere", `written ${fmt.ago(status.updated_seconds_ago)}`);
+    } else {
+      setStateChip("offline", status.ended_here ? "ended" : "saved run");
+    }
+  } else if (gate.holding) {
     setStateChip("held", `held at gen ${gate.generation}`);
-    $("hold-status").className = "hold-status held";
-    $("hold-status").textContent =
-      `Paused at generation ${gate.generation} for ${fmt.duration(gate.held_for)}. ` +
-      `Nothing advances until you continue.`;
   } else if (!status.running) {
     setStateChip("offline", "stopped");
-    $("hold-status").className = "hold-status";
-    $("hold-status").textContent = "Training has stopped.";
   } else {
     setStateChip("running", gate.hold_enabled ? "running" : "running free");
-    $("hold-status").className = "hold-status";
-    $("hold-status").textContent = gate.hold_enabled
+  }
+}
+
+function renderControl(status) {
+  const gate = status.gate || {};
+  const active = Boolean(status.live && status.running);
+  for (const id of ["btn-continue", "btn-continue-5", "btn-hold", "btn-free"]) $(id).disabled = !active;
+  $("btn-hold").setAttribute("aria-pressed", String(Boolean(gate.hold_enabled)));
+  $("btn-stop").hidden = !active;
+  if (!active) disarmStop();
+  $("control-hint").hidden = !status.live;
+
+  const hold = $("hold-status");
+  hold.className = "hold-status";
+  if (!status.live) {
+    hold.textContent = writing(status)
+      ? `This run was written to ${fmt.ago(status.updated_seconds_ago)}. If another process ` +
+        "is training it, new generations appear here as they are saved."
+      : status.ended_here
+        ? "This run ended here and every generation is saved. It can still be replayed, " +
+          "compared and exported."
+        : "This run is not training. Its generations can still be replayed, compared and exported.";
+  } else if (gate.holding) {
+    hold.className = "hold-status held";
+    hold.textContent =
+      `Paused at generation ${gate.generation} for ${fmt.duration(gate.held_for)}. ` +
+      "Nothing advances until you continue.";
+  } else if (!status.running) {
+    hold.textContent = "Training has stopped.";
+  } else {
+    hold.textContent = gate.hold_enabled
       ? (gate.credits > 0
           ? `Running with ${gate.credits} generation${gate.credits === 1 ? "" : "s"} of credit.`
           : "Running. Will pause at the next generation boundary.")
@@ -164,12 +395,44 @@ function renderStatus(status) {
   }
 }
 
+let stopTimer = null;
+
+/* Stopping takes two clicks, so a run is not ended by a stray one. */
+function stopRun() {
+  const button = $("btn-stop");
+  if (!button.classList.contains("armed")) {
+    button.classList.add("armed");
+    button.textContent = "Click again to stop";
+    stopTimer = setTimeout(disarmStop, 4000);
+    return;
+  }
+  disarmStop();
+  postJSON("/api/runs/stop", { run: state.run })
+    .then((result) => {
+      if (result.error) toast(result.error, "bad");
+      else toast(`${result.run} stops after the generation in progress`);
+      pollStatus();
+    })
+    .catch((error) => toast(`Could not stop: ${error.message}`, "bad"));
+}
+
+function disarmStop() {
+  clearTimeout(stopTimer);
+  const button = $("btn-stop");
+  button.classList.remove("armed");
+  button.textContent = "Stop run";
+}
+
 function renderRunDetail(status) {
   const rows = [
     ["Run", status.run_id],
     ["Game", status.game],
-    ["Encoding", `${status.encoding} · ${status.input_size} inputs`],
-    ["Genome", `${fmt.int(status.genome_size)} params`],
+    ["Settings", status.label || "–"],
+    ["Seed", status.seed ?? "–"],
+    ["Started", fmt.when(status.started_at)],
+    ["Encoding", status.encoding ? `${status.encoding} · ${status.input_size} inputs` : "–"],
+    ["Actions", status.actions && status.actions.length ? status.actions.join(", ") : "–"],
+    ["Genome", status.genome_size == null ? "–" : `${fmt.int(status.genome_size)} params`],
     ["Scene", sceneText(status.scene)],
     ["Population", fmt.int(status.population_size)],
     ["Episodes", fmt.int(status.total_episodes)],
@@ -177,101 +440,272 @@ function renderRunDetail(status) {
     ["Runtime", fmt.duration(status.elapsed_seconds)],
     ["Best at gen", fmt.int(status.best_ever_generation)],
     ["Stagnation", `${fmt.int(status.stagnation)} gens`],
+    ["Workers", status.workers ?? "–"],
   ];
+  if (status.resumed_from) rows.push(["Resumed from", status.resumed_from]);
+  if (status.problem) rows.push(["Problem", status.problem]);
   $("run-detail").innerHTML = rows
-    .map(([k, v]) => `<dt>${k}</dt><dd>${escape(String(v))}</dd>`)
+    .map(([k, v]) => `<dt>${k}</dt><dd>${escape(v)}</dd>`)
     .join("");
 }
 
-function escape(text) {
-  return text.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+/* ---------------------------------------------------------------- charts */
+
+/* The lowest and highest of `lists`, leaving out gaps. A range that sits well
+   away from zero on one side starts at zero, so a small rise is not drawn as
+   a large one. */
+function extent(lists) {
+  let lo = Infinity, hi = -Infinity;
+  for (const list of lists) {
+    for (const v of list) {
+      if (v == null || !Number.isFinite(v)) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+  }
+  if (lo === Infinity) return [0, 1];
+  if (lo > 0 && lo <= hi / 2) lo = 0;
+  if (hi < 0 && hi >= lo / 2) hi = 0;
+  if (lo === hi) {
+    if (lo === 0) return [0, 1];
+    const pad = Math.abs(lo) * 0.1;
+    return [lo - pad, hi + pad];
+  }
+  return [lo, hi];
 }
 
-/* ---------------------------------------------------------------- chart */
+/* About `count` ticks covering `lo` to `hi`, a step of 1, 2, 2.5 or 5 times a
+   power of ten apart, and the digits their labels need. */
+function niceScale(lo, hi, count) {
+  const raw = (hi - lo) / Math.max(1, count);
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const multiple = [1, 2, 2.5, 5, 10].find((m) => m * power >= raw * (1 - 1e-9)) || 10;
+  const step = multiple * power;
+  const start = Math.floor(lo / step + 1e-9) * step;
+  const end = Math.ceil(hi / step - 1e-9) * step;
+  const ticks = [];
+  for (let i = 0, n = Math.round((end - start) / step); i <= n; i++) ticks.push(start + i * step);
+  const digits = Math.max(0, -Math.floor(Math.log10(step) + 1e-9) + (multiple === 2.5 ? 1 : 0));
+  return { lo: start, hi: end, ticks, digits };
+}
+
+/* Draw `lines` into `svg` at the size it has on the page and return how it
+   maps values to pixels. Each line is {xs, values, cls}, and a null value
+   leaves a gap. The first line is drawn on top; with `fill` the area beyond
+   it, toward the worse end, is shaded. */
+function plot(svg, lines, options = {}) {
+  const box = svg.getBoundingClientRect();
+  const W = Math.max(60, Math.round(box.width));
+  const H = Math.max(24, Math.round(box.height));
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+  const axis = options.axis !== false;
+  const [lo, hi] = extent(lines.map((line) => line.values));
+  const scale = axis ? niceScale(lo, hi, options.ticks || 4) : { lo, hi, ticks: [], digits: 0 };
+  const labels = scale.ticks.map((v) => fixed(v, scale.digits));
+  const widest = labels.reduce((m, text) => Math.max(m, text.length), 1);
+  const padL = axis ? Math.ceil(widest * 6.2) + 12 : 2;
+  const padR = axis ? 12 : 2, padT = axis ? 12 : 3, padB = axis ? 20 : 3;
+  const innerW = Math.max(1, W - padL - padR);
+  const innerH = Math.max(1, H - padT - padB);
+
+  let x0 = Infinity, x1 = -Infinity;
+  for (const line of lines) {
+    if (!line.xs.length) continue;
+    x0 = Math.min(x0, line.xs[0]);
+    x1 = Math.max(x1, line.xs[line.xs.length - 1]);
+  }
+  if (x0 === Infinity) { x0 = 0; x1 = 1; }
+  const xAt = (x) => padL + (x1 === x0 ? innerW / 2 : ((x - x0) / (x1 - x0)) * innerW);
+  const yAt = (v) => padT + innerH - ((v - scale.lo) / (scale.hi - scale.lo)) * innerH;
+  const xOf = (px) => (x1 === x0 ? x0 : x0 + ((px - padL) / innerW) * (x1 - x0));
+  const at = (x, v) => `${xAt(x).toFixed(1)},${yAt(v).toFixed(1)}`;
+
+  const points = (line) => {
+    const found = [];
+    line.values.forEach((v, i) => {
+      if (v != null && Number.isFinite(v)) found.push([line.xs[i], v]);
+    });
+    return found;
+  };
+
+  let out = "";
+  scale.ticks.forEach((v, i) => {
+    const y = yAt(v).toFixed(1);
+    out += `<line class="grid-line" x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}"/>`;
+    out += `<text class="axis-label" x="${padL - 6}" y="${(Number(y) + 3).toFixed(1)}" text-anchor="end">${labels[i]}</text>`;
+  });
+
+  const first = lines.length ? points(lines[0]) : [];
+  if (options.fill && first.length > 1) {
+    const id = `fade-${svg.id}`;
+    const lower = lowerIsBetter(options.direction);
+    const edge = (lower ? padT : padT + innerH).toFixed(1);
+    const area = first.map(([x, v], i) => `${i ? "L" : "M"}${at(x, v)}`).join("") +
+      `L${xAt(first[first.length - 1][0]).toFixed(1)},${edge}L${xAt(first[0][0]).toFixed(1)},${edge}Z`;
+    out += `<defs><linearGradient id="${id}" x1="0" y1="${lower ? 1 : 0}" x2="0" y2="${lower ? 0 : 1}">` +
+      `<stop offset="0%" class="fade-strong"/><stop offset="100%" class="fade-clear"/>` +
+      `</linearGradient></defs><path class="series-area" fill="url(#${id})" d="${area}"/>`;
+  }
+
+  // Drawn last to first, so the first line ends up on top.
+  for (let k = lines.length - 1; k >= 0; k--) {
+    const line = lines[k];
+    let d = "", pen = false, count = 0, lone = null;
+    line.values.forEach((v, i) => {
+      if (v == null || !Number.isFinite(v)) { pen = false; return; }
+      d += `${pen ? "L" : "M"}${at(line.xs[i], v)}`;
+      pen = true;
+      count++;
+      lone = [line.xs[i], v];
+    });
+    if (count > 1) out += `<path class="series ${line.cls}" d="${d}"/>`;
+    else if (count === 1) {
+      out += `<circle class="point ${line.cls}" cx="${xAt(lone[0]).toFixed(1)}" cy="${yAt(lone[1]).toFixed(1)}" r="2.5"/>`;
+    }
+  }
+
+  for (const dot of options.dots || []) {
+    out += `<circle class="record-dot" cx="${xAt(dot.x).toFixed(1)}" cy="${yAt(dot.v).toFixed(1)}" r="2.6"/>`;
+  }
+  for (const x of options.notches || []) {
+    const px = xAt(x).toFixed(1);
+    out += `<line class="notch" x1="${px}" y1="${H - 3}" x2="${px}" y2="${H}"/>`;
+  }
+  if (options.marker != null && options.marker >= x0 && options.marker <= x1) {
+    const px = xAt(options.marker).toFixed(1);
+    out += `<line class="marker" x1="${px}" y1="${padT}" x2="${px}" y2="${padT + innerH}"/>`;
+  }
+  if (axis) {
+    out += `<text class="axis-label" x="${padL}" y="${H - 5}">gen ${x0}</text>`;
+    out += `<text class="axis-label" x="${W - padR}" y="${H - 5}" text-anchor="end">gen ${x1}</text>`;
+  }
+  svg.innerHTML = out;
+  return { xAt, yAt, xOf, padL, padT, innerW, innerH, W, H, x0, x1 };
+}
 
 async function loadCurve() {
+  if (!state.run) return;
   try {
-    state.curve = await getJSON("/api/curve");
-    renderChart(state.curve);
-  } catch { /* chart is optional */ }
+    const curve = await runJSON("/api/curve");
+    if (!curve) return;
+    state.curve = curve;
+    renderChart();
+  } catch { /* the chart is optional */ }
+}
+
+function curveEnd() {
+  const n = state.curve ? state.curve.generation.length : 0;
+  return n ? state.curve.generation[n - 1] : null;
 }
 
 function extendCurve(summary) {
   const curve = state.curve;
   if (!curve) return;
-  const n = curve.generation.length;
-  const last = n ? curve.generation[n - 1] : null;
+  const last = curveEnd();
   if (last != null && summary.generation <= last) return;
   if (last != null && summary.generation > last + 1) {
     // A generation finished between loading the curve and the stream opening.
     loadCurve();
     return;
   }
-  for (const key of Object.keys(curve)) curve[key].push(summary[key] ?? 0);
+  for (const key of Object.keys(curve)) {
+    curve[key].push(key === "record" ? Boolean(summary.record) : summary[key] ?? 0);
+  }
 }
 
-function renderChart(curve) {
-  const svg = $("chart");
-  const wrap = svg.parentElement;
-  const n = curve.generation.length;
-  if (!n) { wrap.classList.remove("has-data"); return; }
-  wrap.classList.add("has-data");
+const MINIS = [["mean_steps", 1], ["diversity", 3], ["mutation_rate", 3]];
 
-  const W = 1000, H = 220, padL = 34, padR = 12, padT = 12, padB = 20;
-  const innerW = W - padL - padR;
-  const innerH = H - padT - padB;
+function renderChart() {
+  const curve = state.curve;
+  const n = curve ? curve.generation.length : 0;
+  $("chart-wrap").classList.toggle("has-data", n > 0);
+  hideReadout();
+  const shown = state.generation ? state.generation.generation : null;
+  const direction = state.status ? state.status.direction : "higher";
 
-  const best = curve.max_episode_score;
-  const mean = curve.mean_score;
-  const feed = curve.scoring_fraction;
-  const maxScore = Math.max(1, ...best);
-
-  const xAt = (i) => padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW);
-  const yScore = (v) => padT + innerH - (v / maxScore) * innerH;
-  const yPct = (v) => padT + innerH - v * innerH;
-
-  const path = (values, mapper) =>
-    values.map((v, i) => `${i ? "L" : "M"}${xAt(i).toFixed(1)},${mapper(v).toFixed(1)}`).join("");
-
-  const ticks = 4;
-  let grid = "";
-  for (let i = 0; i <= ticks; i++) {
-    const value = (maxScore / ticks) * i;
-    const y = yScore(value);
-    grid += `<line class="grid-line" x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}"/>`;
-    grid += `<text class="axis-label" x="${padL - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end">${
-      maxScore <= 8 ? value.toFixed(0) : Math.round(value)}</text>`;
+  if (!n) {
+    $("chart").innerHTML = "";
+    state.chartScale = null;
+  } else {
+    const xs = curve.generation;
+    const dots = [];
+    curve.record.forEach((record, i) => {
+      if (record) dots.push({ x: xs[i], v: curve.max_episode_score[i] });
+    });
+    state.chartScale = plot($("chart"), [
+      { xs, values: curve.max_episode_score, cls: "best" },
+      { xs, values: curve.mean_score, cls: "mean" },
+    ], { fill: true, direction, dots, marker: shown, ticks: 4 });
   }
 
-  let marker = "";
-  const shown = state.generation && state.generation.generation;
-  if (shown != null) {
-    const index = curve.generation.indexOf(shown);
-    if (index >= 0) {
-      const x = xAt(index).toFixed(1);
-      marker = `<line class="marker" x1="${x}" y1="${padT}" x2="${x}" y2="${padT + innerH}"/>`;
+  const notches = n ? curve.generation.filter((_, i) => curve.record[i]) : [];
+  for (const [key, digits] of MINIS) {
+    const svg = $(`mini-${key}`);
+    const values = n ? curve[key] : [];
+    if (!values.length) {
+      svg.innerHTML = "";
+      $(`mini-${key}-v`).textContent = "–";
+      continue;
     }
+    plot(svg, [{ xs: curve.generation, values, cls: "trace" }],
+      { axis: false, notches, marker: shown });
+    $(`mini-${key}-v`).textContent = fmt.dec(values[values.length - 1], digits);
   }
+}
 
-  const area = `${path(best, yScore)}L${xAt(n - 1).toFixed(1)},${(padT + innerH).toFixed(1)}L${xAt(0).toFixed(1)},${(padT + innerH).toFixed(1)}Z`;
+/* The index in the ascending `list` closest to `value`. */
+function nearest(list, value) {
+  let lo = 0, hi = list.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid] < value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo > 0 && Math.abs(list[lo - 1] - value) <= Math.abs(list[lo] - value) ? lo - 1 : lo;
+}
 
-  svg.innerHTML = `
-    <defs>
-      <linearGradient id="bestFade" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="#4ade80" stop-opacity="0.22"/>
-        <stop offset="100%" stop-color="#4ade80" stop-opacity="0"/>
-      </linearGradient>
-    </defs>
-    ${grid}
-    <path class="series-area" d="${area}"/>
-    <path class="series feed" d="${path(feed, yPct)}"/>
-    <path class="series mean" d="${path(mean, yScore)}"/>
-    <path class="series best" d="${path(best, yScore)}"/>
-    ${marker}
-    <text class="axis-label" x="${padL}" y="${H - 5}">gen ${curve.generation[0]}</text>
-    <text class="axis-label" x="${W - padR}" y="${H - 5}" text-anchor="end">gen ${curve.generation[n - 1]}</text>
-  `;
+function pointedGeneration(event) {
+  const scale = state.chartScale;
+  if (!scale || !state.curve || !state.curve.generation.length) return null;
+  const px = event.clientX - $("chart").getBoundingClientRect().left;
+  return nearest(state.curve.generation, scale.xOf(px));
+}
+
+function chartHover(event) {
+  const index = pointedGeneration(event);
+  if (index == null) return;
+  const curve = state.curve, scale = state.chartScale;
+  const x = scale.xAt(curve.generation[index]);
+  const guide = $("chart-guide");
+  guide.style.left = `${x}px`;
+  guide.style.top = `${scale.padT}px`;
+  guide.style.height = `${scale.innerH}px`;
+  guide.hidden = false;
+
+  const readout = $("chart-readout");
+  readout.innerHTML =
+    `<strong>gen ${curve.generation[index]}</strong>` +
+    `<span class="key best">best ${fmt.num(curve.max_episode_score[index])}</span>` +
+    `<span class="key mean">mean ${fmt.num(curve.mean_score[index])}</span>` +
+    (curve.record[index] ? `<span class="tag ok">record</span>` : "");
+  readout.hidden = false;
+  const width = readout.offsetWidth;
+  readout.style.left = `${Math.max(scale.padL, Math.min(x + 10, scale.W - width - 4))}px`;
+}
+
+function hideReadout() {
+  $("chart-guide").hidden = true;
+  $("chart-readout").hidden = true;
+}
+
+/* A click on the chart opens the kept generation nearest to it. */
+function chartClick(event) {
+  const index = pointedGeneration(event);
+  const available = state.bounds.available;
+  if (index == null || !available.length) return;
+  const generation = state.curve.generation[index];
+  goTo(available[nearest(available, generation)]);
 }
 
 /* ---------------------------------------------------------------- replay */
@@ -475,15 +909,15 @@ function sceneText(scene) {
 /* ---------------------------------------------------------------- generation */
 
 async function loadGeneration(number) {
-  const query = number == null ? "" : `?n=${number}`;
   let data;
   try {
-    data = await getJSON(`/api/generation${query}`);
+    data = await runJSON("/api/generation", { n: number });
   } catch {
     return;
   }
+  if (!data) return;
   if (data.error) {
-    toast(`Generation ${number} is no longer retained`, "bad");
+    if (number != null) toast(`Generation ${number} is no longer kept`, "bad");
     return;
   }
 
@@ -502,7 +936,7 @@ async function loadGeneration(number) {
     if (same) showAgent(same);
   }
   syncScrubber();
-  if (state.curve) renderChart(state.curve);
+  renderChart();
 }
 
 function renderGenerationSummary(summary) {
@@ -515,9 +949,8 @@ function renderGenerationSummary(summary) {
 
   const items = [
     ["Generation", summary.generation, summary.record ? "record" : ""],
-    ["Best score", summary.max_episode_score, summary.record ? "record" : ""],
-    ["Mean score", fmt.dec(summary.mean_score, 3), ""],
-    ["Scored", fmt.pct(summary.scoring_fraction), ""],
+    ["Best score", fmt.num(summary.max_episode_score), summary.record ? "record" : ""],
+    ["Mean score", fmt.num(summary.mean_score), ""],
     ["Best fitness", fmt.int(summary.best_fitness), ""],
     ["Mean steps", fmt.dec(summary.mean_steps, 1), ""],
     ["Diversity", fmt.dec(summary.diversity, 3), ""],
@@ -526,7 +959,7 @@ function renderGenerationSummary(summary) {
     ["Wall time", fmt.duration(summary.elapsed), ""],
   ];
   $("gen-summary").innerHTML = items
-    .map(([k, v, cls]) => `<div class="item ${cls}"><span>${k}</span><span>${escape(String(v))}</span></div>`)
+    .map(([k, v, cls]) => `<div class="item ${cls}"><span>${k}</span><span>${escape(v)}</span></div>`)
     .join("");
 }
 
@@ -534,9 +967,11 @@ function renderGenerationSummary(summary) {
 
 function sortedAgents() {
   const key = state.sort;
+  // Scores sort best first, which for some games is lowest first.
+  const sign = lowerIsBetter(state.status && state.status.direction) ? -1 : 1;
   const copy = state.agents.slice();
   copy.sort((a, b) => {
-    if (key === "score") return b.score - a.score || b.fitness - a.fitness;
+    if (key === "score") return sign * (b.score - a.score) || b.fitness - a.fitness;
     if (key === "steps") return b.steps - a.steps || b.fitness - a.fitness;
     return b.fitness - a.fitness;
   });
@@ -574,7 +1009,7 @@ function renderGrid() {
     cap.className = "cap";
     cap.innerHTML =
       `<span class="rk">#${rank + 1}</span>` +
-      `<span class="sc">${agent.best_episode_score}</span>` +
+      `<span class="sc">${fmt.num(agent.best_episode_score)}</span>` +
       `<span>${Math.round(agent.steps)}s</span>`;
     card.appendChild(cap);
 
@@ -666,10 +1101,10 @@ function showAgent(agent) {
       <dt>Generation</dt><dd>${agent.generation}</dd>
       <dt>Lineage age</dt><dd>${agent.age}</dd>
       <dt>Fitness</dt><dd>${fmt.dec(agent.fitness, 1)}</dd>
-      <dt>Mean score</dt><dd>${fmt.dec(agent.score, 3)}</dd>
-      <dt>Best episode</dt><dd>${agent.best_episode_score}</dd>
+      <dt>Mean score</dt><dd>${fmt.num(agent.score)}</dd>
+      <dt>Best episode</dt><dd>${fmt.num(agent.best_episode_score)}</dd>
       <dt>Mean steps</dt><dd>${fmt.dec(agent.steps, 1)}</dd>
-      <dt>Ended by</dt><dd>${escape(String(agent.end ?? agent.death))}</dd>
+      <dt>Ended by</dt><dd>${escape(agent.end ?? agent.death)}</dd>
       <dt>Replay</dt><dd>${cursor ? `${cursor.frames} frames${cursor.truncated ? " (truncated)" : ""}` : "none"}</dd>
     </dl>
     <p class="section-label">Fitness terms</p>
@@ -696,15 +1131,40 @@ function closeSheet() {
 
 /* ---------------------------------------------------------------- export */
 
+/* Export offers two picks. The champion is the genome behind the run's best
+   score, which one lucky game can put there. The best average plays every
+   genome the run holds on fresh games, as the export command does, and runs
+   as a job on the server that the page polls. */
+
+let jobTimer = null;
+
+function setPick(pick) {
+  state.exportPick = pick;
+  for (const input of document.querySelectorAll('input[name="pick"]')) input.checked = input.value === pick;
+  $("average-controls").hidden = pick !== "average";
+  $("champion-controls").hidden = pick !== "champion";
+  renderExport();
+  renderJob();
+}
+
+/* The report the export button would write, for the pick shown. */
+function exportReport() {
+  if (state.exportPick === "champion") return state.championReport;
+  const job = state.job;
+  return job && job.state === "done" ? job.report : null;
+}
+
 async function previewExport() {
-  const raw = $("export-gen").value.trim();
-  const query = raw === "" ? "" : `?n=${encodeURIComponent(raw)}`;
   $("btn-preview").disabled = true;
   try {
-    const report = await getJSON(`/api/export/preview${query}`);
-    state.exportReport = report;
-    renderExportReport(report);
-    $("btn-export").disabled = !report.ready;
+    const report = await runJSON("/api/export/preview", { n: $("export-gen").value.trim() });
+    if (!report) return;
+    if (report.error) {
+      toast(report.error, "bad");
+      return;
+    }
+    state.championReport = report;
+    renderExport();
   } catch (error) {
     toast(`Could not calculate: ${error.message}`, "bad");
   } finally {
@@ -712,29 +1172,119 @@ async function previewExport() {
   }
 }
 
-function renderExportReport(report) {
-  const t = report.training || {};
+async function chooseByAverage() {
+  $("btn-choose").disabled = true;
+  try {
+    const result = await postJSON("/api/export/choose", { run: state.run });
+    if (result.error) {
+      toast(result.error, "bad");
+      if (result.job && result.job.run === state.run) attach(result.job);
+      return;
+    }
+    attach(result.job);
+  } catch (error) {
+    toast(`Could not start choosing: ${error.message}`, "bad");
+  } finally {
+    renderJob();
+  }
+}
+
+function attach(job) {
+  state.job = job;
+  renderJob();
+  renderExport();
+  clearTimeout(jobTimer);
+  if (job && job.state === "running") jobTimer = setTimeout(pollJob, JOB_MS);
+}
+
+async function pollJob() {
+  const job = state.job;
+  if (!job) return;
+  try {
+    const data = await getJSON(`/api/export/job?id=${encodeURIComponent(job.id)}`);
+    if (state.job !== job) return;
+    attach(data.job);
+  } catch {
+    if (state.job === job) jobTimer = setTimeout(pollJob, JOB_MS * 4);
+  }
+}
+
+/* Pick up a choice already made or under way for the run shown. */
+async function attachJob() {
+  const run = state.run;
+  try {
+    const data = await getJSON("/api/export/job");
+    if (state.run === run && data.job && data.job.run === run) attach(data.job);
+  } catch { /* no choice to show */ }
+}
+
+const STAGES = {
+  reading: "Gathering candidates",
+  screen: (job) => `Screening ${fmt.int(job.candidates)} candidates`,
+  final: "Final games for the leaders",
+};
+
+function renderJob() {
+  const job = state.exportPick === "average" ? state.job : null;
+  $("job").hidden = !job;
+  $("btn-choose").textContent = state.job && state.job.state === "done" ? "Choose again" : "Choose";
+  $("btn-choose").disabled = Boolean(state.job && state.job.state === "running");
+  if (!job) return;
+  const stage = STAGES[job.stage] || job.stage;
+  let text = typeof stage === "function" ? stage(job) : stage;
+  if (job.state === "done") text = `Chose from ${fmt.int(job.candidates)} candidates`;
+  else if (job.state === "cancelled") text = "Cancelled";
+  else if (job.state === "failed") text = "Could not choose";
+  $("job-stage").textContent = text;
+  $("job-count").textContent = job.games ? `${fmt.int(job.played)} / ${fmt.int(job.games)} games` : "";
+  const share = job.state === "done" ? 1 : job.games ? job.played / job.games : 0;
+  $("job-bar").style.width = `${(share * 100).toFixed(1)}%`;
+  $("job").dataset.state = job.state;
+  $("job-time").textContent = job.error || fmt.duration(job.seconds);
+  $("job-cancel").hidden = job.state !== "running";
+}
+
+async function cancelJob() {
+  const job = state.job;
+  if (!job) return;
+  try {
+    const result = await postJSON("/api/export/cancel", { job: job.id });
+    if (result.error) toast(result.error, "bad");
+    pollJob();
+  } catch (error) {
+    toast(`Could not cancel: ${error.message}`, "bad");
+  }
+}
+
+function renderExport() {
+  const report = exportReport();
+  $("btn-export").disabled = !(report && report.ready);
   const availability = $("export-availability");
-  if (report.torch_available) {
+  if (report && report.torch_available) {
     availability.textContent = ".json and .pt";
     availability.className = "tag ok";
   } else {
-    availability.textContent = ".json";
+    availability.textContent = report ? ".json" : "";
     availability.className = "tag";
   }
+  if (!report) {
+    $("export-report").innerHTML = state.exportHint;
+    return;
+  }
+  const t = report.training || {};
 
   const cards = [
     ["Generation", report.resolved_generation],
     ["Parameters", fmt.int(report.parameter_count)],
     ["Est. size", fmt.bytes(report.estimated_size_bytes)],
-    ["Best score", fmt.int(t.best_score)],
+    ["Best score", fmt.num(t.best_score)],
     ["At generation", fmt.int(t.best_generation)],
     ["Generations", fmt.int(t.generations)],
     ["Episodes", fmt.int(t.episodes)],
     ["Compute time", fmt.duration(t.compute_seconds)],
     ["Records set", fmt.int(t.records_set)],
-    ["Final mean", fmt.dec(t.mean_score_final, 3)],
-    ["Final scored", fmt.pct(t.scoring_fraction_final)],
+    ["Final mean", fmt.num(t.mean_score_final)],
+    ["Final mean steps", fmt.dec(t.mean_steps_final, 1)],
     ["Achievements", `${report.achievements_unlocked} / ${report.achievements_total}`],
   ];
 
@@ -749,17 +1299,37 @@ function renderExportReport(report) {
     .map(([k, v]) => `${k} ${fmt.int(v)}`)
     .join(" · ");
 
+  let selection = "";
+  const chosen = report.selection;
+  if (chosen) {
+    const rows = [
+      ["Picked", chosen.source],
+      ["Mean of pick", fmt.num(chosen.selection_mean)],
+      ["Champion's mean", fmt.num(chosen.stored_champion_mean)],
+      ["Candidates", fmt.int(chosen.candidates)],
+      ["Games", fmt.int(chosen.games)],
+    ];
+    const note = chosen.note ? chosen.note.charAt(0).toUpperCase() + chosen.note.slice(1) : "";
+    selection = `
+      <p class="section-label">Selection · ${escape(chosen.rule)}</p>
+      <dl class="detail">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${escape(v)}</dd>`).join("")}</dl>
+      ${note ? `<p class="hint">${escape(note)}.</p>` : ""}`;
+  }
+
   let notice = "";
   if (!report.genome_available) {
-    notice = `<p class="hint" style="color:var(--warn)">No champion genome is archived at or before generation ${report.requested_generation}.</p>`;
+    notice = report.pick === "champion"
+      ? `<p class="hint warn">No champion genome is archived at or before generation ${escape(report.requested_generation ?? report.resolved_generation)}.</p>`
+      : `<p class="hint warn">The chosen genome could not be read back.</p>`;
   } else if (!report.torch_available) {
     notice = `<p class="hint">Only the JSON model is written. <code>pip install torch</code> adds a .pt copy beside it.</p>`;
   }
 
   $("export-report").innerHTML = `
     <div class="report-grid">
-      ${cards.map(([k, v]) => `<div class="report-item"><span class="k">${k}</span><span class="v">${escape(String(v))}</span></div>`).join("")}
+      ${cards.map(([k, v]) => `<div class="report-item"><span class="k">${k}</span><span class="v">${escape(v)}</span></div>`).join("")}
     </div>
+    ${selection}
     <p class="section-label">Achievements</p>
     <div class="achievements">${achievements}</div>
     <p class="section-label">How episodes ended</p>
@@ -771,11 +1341,14 @@ function renderExportReport(report) {
 }
 
 async function doExport() {
-  const report = state.exportReport;
+  const report = exportReport();
   if (!report) return;
+  const body = state.exportPick === "average"
+    ? { run: state.run, job: state.job.id }
+    : { run: state.run, generation: report.resolved_generation };
   $("btn-export").disabled = true;
   try {
-    const result = await postJSON("/api/export", { generation: report.resolved_generation });
+    const result = await postJSON("/api/export", body);
     if (result.error) {
       toast(result.error, "bad");
       return;
@@ -796,6 +1369,361 @@ async function doExport() {
   }
 }
 
+/* ---------------------------------------------------------------- new run */
+
+/* The form is built from the game's own settings, so a new game needs nothing
+   here. Every value starts where this dashboard was opened, and only the
+   changed ones are sent; the server checks them as the command line does. */
+
+async function openDrawer() {
+  $("drawer").hidden = false;
+  if (!state.gamesLoaded) await loadGames();
+  $("new-game").focus();
+}
+
+function closeDrawer() {
+  $("drawer").hidden = true;
+}
+
+async function loadGames() {
+  try {
+    const data = await getJSON("/api/games");
+    const select = $("new-game");
+    select.innerHTML = data.games
+      .map((game) => `<option value="${escape(game)}">${escape(game)}</option>`)
+      .join("");
+    select.value = data.default;
+    state.gamesLoaded = true;
+    await loadSettings(select.value);
+  } catch (error) {
+    toast(`Could not list the games: ${error.message}`, "bad");
+  }
+}
+
+async function loadSettings(game) {
+  const box = $("new-settings");
+  box.innerHTML = `<p class="hint">Reading the settings of ${escape(game)}…</p>`;
+  showProblems([]);
+  state.settings = { game, rows: [], inputs: new Map() };
+  let data;
+  try {
+    data = await getJSON(`/api/settings?game=${encodeURIComponent(game)}`);
+  } catch (error) {
+    box.innerHTML = `<p class="hint warn">Could not read the settings: ${escape(error.message)}</p>`;
+    return;
+  }
+  if ($("new-game").value !== game) return;
+  if (data.error) {
+    box.innerHTML = `<p class="hint warn">${escape(data.error)}</p>`;
+    return;
+  }
+  state.settings.rows = data.settings;
+  renderSettings();
+}
+
+function renderSettings() {
+  const { game, rows } = state.settings;
+  const box = $("new-settings");
+  box.innerHTML = "";
+  const groups = new Map();
+  for (const row of rows) {
+    if (!groups.has(row.group)) groups.set(row.group, []);
+    groups.get(row.group).push(row);
+  }
+  for (const [group, members] of groups) {
+    const details = document.createElement("details");
+    details.className = "settings-group";
+    details.dataset.group = group;
+    details.open = group === "game";
+    const summary = document.createElement("summary");
+    summary.innerHTML =
+      `<span>${escape(group === "game" ? game : group)}</span><span class="changed-count"></span>`;
+    details.appendChild(summary);
+    for (const row of members) details.appendChild(settingRow(row));
+    box.appendChild(details);
+  }
+  markChanged();
+}
+
+function settingRow(row) {
+  const node = document.createElement("label");
+  node.className = "setting";
+  node.dataset.name = row.name;
+
+  let input;
+  if (row.input === "flag") {
+    input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = row.value === "true";
+  } else if (row.choices && !row.several) {
+    input = document.createElement("select");
+    input.className = "select";
+    const options = row.choices.includes(row.value) ? row.choices : [row.value, ...row.choices];
+    input.innerHTML = options.map((c) => `<option value="${escape(c)}">${escape(c)}</option>`).join("");
+    input.value = row.value;
+  } else {
+    input = document.createElement("input");
+    input.type = "text";
+    input.value = row.value;
+    input.spellcheck = false;
+    if (!row.several && row.input === "whole") input.inputMode = "numeric";
+    else if (!row.several && row.input === "number") input.inputMode = "decimal";
+  }
+  input.name = row.name;
+  input.title = row.kind;
+  input.setAttribute("aria-label", row.name);
+  input.addEventListener("input", markChanged);
+  input.addEventListener("change", markChanged);
+  state.settings.inputs.set(row.name, input);
+
+  // Game settings keep their whole name; the rest are already under their section.
+  const name = document.createElement("span");
+  name.className = "setting-name";
+  name.textContent = row.group === "game" ? row.name : row.name.slice(row.group.length + 1);
+  name.title = row.name;
+  node.append(name, input);
+
+  if (row.several) {
+    const hint = document.createElement("small");
+    hint.textContent = row.choices ? `any of ${row.choices.join(", ")}, comma separated` : "comma separated";
+    node.appendChild(hint);
+  }
+  return node;
+}
+
+function settingValue(row) {
+  const input = state.settings.inputs.get(row.name);
+  if (!input) return row.value;
+  return row.input === "flag" ? (input.checked ? "true" : "false") : input.value.trim();
+}
+
+/* Two lists that differ only in spacing are the same setting. */
+function sameValue(row, a, b) {
+  if (!row.several) return a.trim() === b.trim();
+  const items = (text) => text.split(",").map((part) => part.trim()).filter(Boolean).join(",");
+  return items(a) === items(b);
+}
+
+function changedSettings() {
+  const changed = {};
+  for (const row of state.settings.rows) {
+    const value = settingValue(row);
+    if (!sameValue(row, value, row.value)) changed[row.name] = value;
+  }
+  return changed;
+}
+
+function markChanged() {
+  const changed = changedSettings();
+  const counts = new Map();
+  for (const row of state.settings.rows) {
+    const on = row.name in changed;
+    const node = $("new-settings").querySelector(`.setting[data-name="${CSS.escape(row.name)}"]`);
+    if (node) node.classList.toggle("changed", on);
+    if (on) counts.set(row.group, (counts.get(row.group) || 0) + 1);
+  }
+  for (const details of $("new-settings").querySelectorAll(".settings-group")) {
+    const count = counts.get(details.dataset.group) || 0;
+    details.querySelector(".changed-count").textContent = count ? `${count} changed` : "";
+  }
+}
+
+function showProblems(problems) {
+  const list = $("new-problems");
+  list.hidden = !problems.length;
+  list.innerHTML = problems.map((p) => `<li>${escape(p)}</li>`).join("");
+  for (const node of document.querySelectorAll("#new-run .bad")) node.classList.remove("bad");
+  for (const problem of problems) {
+    for (const row of state.settings.rows) {
+      if (!problem.startsWith(`${row.name} `) && !problem.includes(` ${row.name};`)) continue;
+      const node = $("new-settings").querySelector(`.setting[data-name="${CSS.escape(row.name)}"]`);
+      if (!node) continue;
+      node.classList.add("bad");
+      node.closest("details").open = true;
+    }
+    if (problem.startsWith("generations ")) $("field-generations").classList.add("bad");
+    if (problem.startsWith("seed ")) $("field-seed").classList.add("bad");
+  }
+}
+
+function resetSettings() {
+  $("new-generations").value = "";
+  $("new-seed").value = "";
+  showProblems([]);
+  renderSettings();
+}
+
+async function startRun(event) {
+  event.preventDefault();
+  const button = $("new-start");
+  button.disabled = true;
+  const raw = (id) => $(id).value.trim() || null;
+  try {
+    const result = await postJSON("/api/runs/start", {
+      game: $("new-game").value,
+      settings: changedSettings(),
+      generations: raw("new-generations"),
+      seed: raw("new-seed"),
+    });
+    if (result.problems) {
+      showProblems(result.problems);
+      return;
+    }
+    showProblems([]);
+    closeDrawer();
+    toast(`Started ${result.run}, seed ${result.seed}`, "good");
+    await loadRuns();
+    show(result.run, true);
+  } catch (error) {
+    toast(`Could not start: ${error.message}`, "bad");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/* ---------------------------------------------------------------- compare */
+
+/* Runs set side by side, each in its own colour. The list follows the run
+   shown until a box is ticked by hand. */
+
+let comparedKey = "";
+
+function compareSlot() {
+  const used = new Set(state.compare.values());
+  for (let slot = 0; slot < COMPARE_AT_MOST; slot++) if (!used.has(slot)) return slot;
+  return null;
+}
+
+function renderComparePick() {
+  const known = new Set(state.runs.map((run) => run.run_id));
+  if (!state.compareTouched) {
+    state.compare = new Map(state.run ? [[state.run, 0]] : []);
+  }
+  for (const id of [...state.compare.keys()]) if (!known.has(id)) state.compare.delete(id);
+
+  const full = state.compare.size >= COMPARE_AT_MOST;
+  const markup = state.runs.map((run) => {
+    const slot = state.compare.get(run.run_id);
+    const on = slot != null;
+    return `<label class="compare-run${on ? " on" : ""}">
+        <input type="checkbox" value="${escape(run.run_id)}"${on ? " checked" : ""}${!on && full ? " disabled" : ""}>
+        <span class="swatch${on ? ` c${slot}` : ""}"></span>
+        <span class="compare-name"><span>${escape(run.run_id)}</span>
+          <small>${escape(run.game)} · ${escape(run.label)}</small></span>
+      </label>`;
+  }).join("");
+  const box = $("compare-pick");
+  if (box.dataset.markup !== markup) {
+    box.innerHTML = markup;
+    box.dataset.markup = markup;
+  }
+}
+
+function toggleCompare(event) {
+  const input = event.target;
+  if (input.type !== "checkbox") return;
+  state.compareTouched = true;
+  if (input.checked) {
+    const slot = compareSlot();
+    if (slot != null) state.compare.set(input.value, slot);
+  } else {
+    state.compare.delete(input.value);
+  }
+  refreshCompared(true);
+}
+
+/* Fetch the comparison again when the runs in it change, or while one of them
+   is still training. */
+async function refreshCompared(force = false) {
+  renderComparePick();
+  const ids = [...state.compare.keys()];
+  const key = ids.join(",");
+  const moving = state.runs.some((run) =>
+    state.compare.has(run.run_id) && (run.live || writing(run)));
+  if (!force && key === comparedKey && !moving) return;
+  comparedKey = key;
+  if (!ids.length) {
+    state.compared = null;
+    renderCompare();
+    return;
+  }
+  try {
+    const data = await getJSON(`/api/compare?runs=${encodeURIComponent(key)}`);
+    if (key !== [...state.compare.keys()].join(",")) return;
+    state.compared = data;
+    renderCompare();
+  } catch { /* shown again on the next refresh */ }
+}
+
+/* The best score so far at each generation, in the run's direction. */
+function bestSoFar(values, direction) {
+  const lower = lowerIsBetter(direction);
+  let best = null;
+  return values.map((v) => {
+    if (v != null && (best == null || (lower ? v < best : v > best))) best = v;
+    return best;
+  });
+}
+
+function renderCompare() {
+  const runs = state.compared ? state.compared.runs : [];
+  const games = new Set(runs.map((run) => run.game));
+  const directions = new Set(runs.map((run) => run.direction));
+  const note = $("compare-note");
+  if (games.size > 1) note.textContent = "different games, scores on different scales";
+  else if (runs.length) note.textContent = `best so far · ${betterWord([...directions][0])}`;
+  else note.textContent = "";
+
+  const drawn = runs.filter((run) => run.curve.generation.length);
+  $("compare-wrap").classList.toggle("has-data", drawn.length > 0);
+  if (drawn.length) {
+    plot($("compare-chart"), drawn.map((run) => ({
+      xs: run.curve.generation,
+      values: bestSoFar(run.curve.max_episode_score, run.direction),
+      cls: `c${state.compare.get(run.run_id) ?? 0}`,
+    })), { ticks: 4 });
+  } else {
+    $("compare-chart").innerHTML = "";
+  }
+
+  // The best of each game is marked, since scores of different games do not compare.
+  const lead = new Map();
+  for (const run of runs) {
+    if (run.best == null) continue;
+    const held = lead.get(run.game);
+    const lower = lowerIsBetter(run.direction);
+    if (held == null || (lower ? run.best < held : run.best > held)) lead.set(run.game, run.best);
+  }
+
+  const table = $("compare-table");
+  if (!runs.length) {
+    table.innerHTML = "";
+    return;
+  }
+  const head = ["", "Run", "Settings", "Game", "Seed", "Gens", "Best", "At gen",
+    "Recent mean", "Episodes", "Eps / s", "Time"];
+  table.innerHTML = `
+    <thead><tr>${head.map((h, i) => `<th${i > 4 ? ' class="n"' : ""}>${h}</th>`).join("")}</tr></thead>
+    <tbody>${runs.map((run) => {
+      const slot = state.compare.get(run.run_id) ?? 0;
+      const leads = run.best != null && run.best === lead.get(run.game) && runs.length > 1;
+      return `<tr data-run="${escape(run.run_id)}"${run.run_id === state.run ? ' class="current"' : ""}>
+        <td><span class="swatch c${slot}"></span></td>
+        <td class="mono">${escape(run.run_id)}${run.live ? ' <span class="tag ok">live</span>' : ""}</td>
+        <td>${escape(run.label)}</td>
+        <td>${escape(run.game)}</td>
+        <td class="mono">${escape(run.seed ?? "–")}</td>
+        <td class="n">${fmt.int(run.generations)}</td>
+        <td class="n${leads ? " lead" : ""}">${fmt.num(run.best)}</td>
+        <td class="n">${fmt.int(run.best_generation)}</td>
+        <td class="n">${fmt.num(run.recent_mean)}</td>
+        <td class="n">${fmt.int(run.episodes)}</td>
+        <td class="n">${fmt.dec(run.episodes_per_second, 1)}</td>
+        <td class="n">${fmt.duration(run.seconds)}</td>
+      </tr>`;
+    }).join("")}</tbody>`;
+}
+
 /* ---------------------------------------------------------------- navigation */
 
 function syncScrubber() {
@@ -810,6 +1738,7 @@ function syncScrubber() {
 }
 
 async function goTo(number) {
+  if (!state.run) return;
   const { first, last } = state.bounds;
   const target = Math.max(first, Math.min(last, number));
   state.following = false;
@@ -819,6 +1748,7 @@ async function goTo(number) {
 }
 
 function follow() {
+  if (!state.run) return;
   state.following = true;
   state.pinned = null;
   loadGeneration(null);
@@ -827,11 +1757,29 @@ function follow() {
 
 /* ---------------------------------------------------------------- wiring */
 
+function control(action, count) {
+  postJSON("/api/control", { run: state.run, action, count })
+    .then((result) => {
+      if (result.error) toast(result.error, "bad");
+      else scheduleRefresh();
+    })
+    .catch((error) => toast(`Could not reach the run: ${error.message}`, "bad"));
+}
+
 function bind() {
-  $("btn-continue").addEventListener("click", () => postJSON("/api/control", { action: "continue", count: 1 }));
-  $("btn-continue-5").addEventListener("click", () => postJSON("/api/control", { action: "continue", count: 5 }));
-  $("btn-hold").addEventListener("click", () => postJSON("/api/control", { action: "hold" }));
-  $("btn-free").addEventListener("click", () => postJSON("/api/control", { action: "run_free" }));
+  $("run-select").addEventListener("change", (e) => show(e.target.value, true));
+  $("btn-new").addEventListener("click", openDrawer);
+
+  $("btn-continue").addEventListener("click", () => control("continue", 1));
+  $("btn-continue-5").addEventListener("click", () => control("continue", 5));
+  $("btn-hold").addEventListener("click", () => control("hold"));
+  $("btn-free").addEventListener("click", () => control("run_free"));
+  $("btn-stop").addEventListener("click", stopRun);
+
+  const chart = $("chart");
+  chart.addEventListener("pointermove", chartHover);
+  chart.addEventListener("pointerleave", hideReadout);
+  chart.addEventListener("click", chartClick);
 
   $("gen-first").addEventListener("click", () => goTo(state.bounds.first));
   $("gen-prev").addEventListener("click", () => goTo((state.generation?.generation ?? 0) - 1));
@@ -858,16 +1806,53 @@ function bind() {
   $("sort").addEventListener("change", (e) => { state.sort = e.target.value; renderGrid(); });
   $("limit").addEventListener("change", (e) => { state.limit = Number(e.target.value); renderGrid(); });
 
+  for (const input of document.querySelectorAll('input[name="pick"]')) {
+    input.addEventListener("change", () => setPick(input.value));
+  }
   $("btn-preview").addEventListener("click", previewExport);
+  $("btn-choose").addEventListener("click", chooseByAverage);
+  $("job-cancel").addEventListener("click", cancelJob);
   $("btn-export").addEventListener("click", doExport);
   $("sheet-close").addEventListener("click", closeSheet);
 
+  $("drawer-close").addEventListener("click", closeDrawer);
+  $("new-game").addEventListener("change", (e) => loadSettings(e.target.value));
+  $("new-reset").addEventListener("click", resetSettings);
+  $("new-run").addEventListener("submit", startRun);
+
+  $("compare-pick").addEventListener("change", toggleCompare);
+  $("compare-table").addEventListener("click", (e) => {
+    const row = e.target.closest("tr[data-run]");
+    if (row && row.dataset.run !== state.run) show(row.dataset.run, true);
+  });
+
+  if (window.ResizeObserver) {
+    let pending = false;
+    const redraw = () => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        renderChart();
+        renderCompare();
+      });
+    };
+    const observer = new ResizeObserver(redraw);
+    observer.observe($("chart-wrap"));
+    observer.observe($("compare-wrap"));
+  }
+
   document.addEventListener("keydown", (e) => {
-    if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+    if (e.key === "Escape") {
+      if (!$("drawer").hidden) closeDrawer();
+      else closeSheet();
+      return;
+    }
+    const tag = e.target.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || e.target.closest("#drawer")) return;
     if (e.key === "ArrowLeft") goTo((state.generation?.generation ?? 0) - 1);
     else if (e.key === "ArrowRight") goTo((state.generation?.generation ?? 0) + 1);
     else if (e.key === " ") { e.preventDefault(); $("btn-play").click(); }
-    else if (e.key === "Escape") closeSheet();
     else if (e.key.toLowerCase() === "c") $("btn-continue").click();
     else if (e.key.toLowerCase() === "l") follow();
   });
@@ -884,49 +1869,81 @@ function scheduleRefresh() {
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
     pollStatus();
-    if (state.curve) renderChart(state.curve);
+    renderChart();
   }, 150);
+}
+
+let runsTimer = null;
+
+function runsSoon() {
+  clearTimeout(runsTimer);
+  runsTimer = setTimeout(loadRuns, 300);
 }
 
 function listen() {
   if (!window.EventSource) return;
   const source = new EventSource("/api/events");
+  // `mine` is whether the event is about the run shown. Events from before
+  // they carried a run are taken as the run shown.
   const on = (kind, handler) =>
-    source.addEventListener(kind, (e) => handler(JSON.parse(e.data)));
+    source.addEventListener(kind, (e) => {
+      const event = JSON.parse(e.data);
+      handler(event, event.run == null || event.run === state.run);
+    });
 
   source.addEventListener("open", () => { state.live = true; });
   source.addEventListener("error", () => { state.live = false; });
 
-  on("generation", (event) => { extendCurve(event.summary); scheduleRefresh(); });
-  on("record", (event) =>
-    toast(`New best score ${event.score} at generation ${event.generation}`, "good"));
-  on("held", scheduleRefresh);
-  on("resumed", scheduleRefresh);
-  on("note", (event) => toast(event.message));
-  on("run_finished", (event) => {
+  on("generation", (event, mine) => {
+    if (!mine) return;
+    extendCurve(event.summary);
+    scheduleRefresh();
+  });
+  on("record", (event, mine) => {
+    if (mine) toast(`New best score ${fmt.num(event.score)} at generation ${event.generation}`, "good");
+  });
+  on("held", (event, mine) => { if (mine) scheduleRefresh(); });
+  on("resumed", (event, mine) => { if (mine) scheduleRefresh(); });
+  on("note", (event, mine) => { if (mine) toast(event.message); });
+  on("run_started", runsSoon);
+  on("run_finished", (event, mine) => {
+    runsSoon();
+    if (!mine) return;
     scheduleRefresh();
     if (event.error) toast(`Training stopped: ${event.error}`, "bad");
   });
   // Events were missed, so rebuild from the regular endpoints.
-  on("resync", () => { loadCurve(); scheduleRefresh(); });
+  on("resync", () => { loadCurve(); scheduleRefresh(); runsSoon(); });
 }
 
 function statusLoop() {
-  pollStatus().finally(() => setTimeout(statusLoop, state.live ? STATUS_LIVE_MS : STATUS_MS));
+  const status = state.status;
+  const saved = status != null && !status.live;
+  // A run read from disk that has not been written to for a while is not
+  // going to change, and the list of runs notices when it does.
+  const entry = state.runs.find((run) => run.run_id === state.run);
+  const settled = saved && entry != null && !entry.live && !writing(entry);
+  const work = settled ? Promise.resolve() : pollStatus();
+  const delay = !state.run || saved ? SAVED_MS : state.live ? STATUS_LIVE_MS : STATUS_MS;
+  work.finally(() => setTimeout(statusLoop, delay));
 }
 
 function heartbeat() {
   // Presence lease. The trainer holds only while these keep arriving, so a
-  // closed tab releases the hold instead of stalling the run indefinitely.
+  // closed tab, or one showing another run, releases the hold instead of
+  // stalling the run indefinitely.
+  if (!state.run || state.run !== state.liveRun) return;
   postJSON("/api/heartbeat").catch(() => {});
 }
 
 function init() {
+  state.wanted = new URLSearchParams(window.location.search).get("run");
+  state.exportHint = $("export-report").innerHTML;
   bind();
-  heartbeat();
+  setPick(state.exportPick);
   listen();
-  loadCurve();
-  statusLoop();
+  loadRuns().finally(statusLoop);
+  setInterval(loadRuns, RUNS_MS);
   setInterval(heartbeat, HEARTBEAT_MS);
   requestAnimationFrame(tick);
 }

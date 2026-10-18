@@ -61,6 +61,42 @@ def choices(game: str) -> dict[str, tuple]:
     return {**games.get(game).setting_choices(), **ENGINE_CHOICES}
 
 
+def table(config: Config, leave_out: Iterable[str] = ()) -> list[dict]:
+    """Every setting with what a form needs to change it, in the order of `values`.
+
+    Each row holds the name, the value written as `parse` reads it, the kind of
+    value in words, the input it takes ("flag", "whole", "number" or "text"),
+    whether it holds several values, and its choices if it has a fixed set.
+    Settings in the sections named in `leave_out` are not listed.
+    """
+    allowed = choices(config.game)
+    rows = []
+    for name, value in values(config).items():
+        section = name.partition(".")[0]
+        if section in leave_out:
+            continue
+        rows.append({
+            "name": name,
+            "group": section if section in SECTIONS else "game",
+            "value": show(value),
+            "kind": _kind(value),
+            "input": _input(value),
+            "several": isinstance(value, tuple),
+            "choices": [show(option) for option in allowed[name]] if name in allowed else None,
+        })
+    return rows
+
+
+def _input(like) -> str:
+    if isinstance(like, bool):
+        return "flag"
+    if isinstance(like, Integral):
+        return "whole"
+    if isinstance(like, Real):
+        return "number"
+    return "text"
+
+
 def _leaves(settings, prefix: str = "") -> dict[str, object]:
     found = {}
     for field in dataclasses.fields(settings):

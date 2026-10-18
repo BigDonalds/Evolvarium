@@ -61,6 +61,17 @@ and checkpoint, which any other client can read as well:
 curl -N http://127.0.0.1:8765/api/events
 ```
 
+`python -m evolvarium serve --open` opens the dashboard on every run in the runs
+directory without training one. Runs are started there from a form of the
+game's settings, checked as `train` checks them, and can be stopped, set side by
+side and exported, choosing the exported genome by its average as `export` does.
+`--game` picks the game the form starts on, and `--set` the values it starts
+from:
+
+```bash
+python -m evolvarium serve --game package.module:Class --set evolution.population_size=120 --open
+```
+
 `python -m evolvarium --help` lists the other commands. The full reference for
 the baseline is Snake-AI's
 [COMMANDS.md](https://github.com/BigDonalds/Snake-AI/blob/v0.2.0/COMMANDS.md),
