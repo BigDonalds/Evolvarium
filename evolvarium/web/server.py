@@ -18,6 +18,7 @@ Endpoints
 
 from __future__ import annotations
 
+import gzip
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -42,6 +43,27 @@ _CONTENT_TYPES = {
     ".js": "application/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
 }
+# Responses at least this long are compressed for a browser that accepts it. A
+# late generation's replays are about 2 MB as JSON and under 200 KB compressed,
+# at level 5, in about 25 ms.
+_COMPRESS_FROM = 1024
+_COMPRESS_LEVEL = 5
+
+
+def accepts_gzip(header: str | None) -> bool:
+    """Whether an Accept-Encoding header allows a gzip response."""
+    for part in (header or "").split(","):
+        coding, _, params = part.partition(";")
+        if coding.strip().lower() not in ("gzip", "*"):
+            continue
+        quality = params.strip().lower()
+        if quality.startswith("q="):
+            try:
+                return float(quality[2:]) > 0
+            except ValueError:
+                return False
+        return True
+    return False
 
 
 class DashboardServer:
@@ -116,7 +138,7 @@ class DashboardServer:
             "generation": record.generation,
             "summary": record.summary,
             "agents": record.agents,
-            "scene": self.trainer.population.game.scene(),
+            "scene": self.trainer.population.scene,
         }
 
     def control(self, payload: dict) -> dict:
@@ -206,10 +228,18 @@ def _make_handler(server: DashboardServer):
         # ---------------------------------------------------------- transport
 
         def _send(self, payload: bytes, content_type: str, status: int = 200) -> None:
+            compressed = len(payload) >= _COMPRESS_FROM and accepts_gzip(
+                self.headers.get("Accept-Encoding")
+            )
+            if compressed:
+                payload = gzip.compress(payload, _COMPRESS_LEVEL)
             try:
                 self.send_response(status)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(payload)))
+                if compressed:
+                    self.send_header("Content-Encoding", "gzip")
+                self.send_header("Vary", "Accept-Encoding")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(payload)

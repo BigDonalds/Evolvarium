@@ -95,10 +95,9 @@ class HistoryConfig:
     # Compressed replay files kept on disk. Record-setting generations are
     # exempt from eviction so milestones stay reviewable.
     replay_retention: int = 400
-    # Steps recorded per agent replay; 0 records the whole game. Every step is
-    # stored so the body can be reconstructed exactly. A limit here cuts the end
-    # game out of the replay: at 1,200, a strong snake's replay stopped about 40%
-    # of the way before its game did and read as a death that never happened.
+    # Steps recorded per agent replay after its first frame; 0 records the whole
+    # game. A limit here cuts the end game out of the replay: at 1,200, a strong
+    # snake's replay stopped about 40% of the way before its game did.
     replay_steps: int = 0
     # Agents whose replay is archived, ranked by fitness. 0 archives all.
     agents_per_generation: int = 0

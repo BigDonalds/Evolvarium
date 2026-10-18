@@ -38,7 +38,10 @@ const state = {
   sort: "fitness",
   limit: 60,
   agents: [],
-  board: { width: 14, height: 14 },
+  shown: [],             // agents with a card, in grid order
+  scene: null,           // what the game draws, from the generation
+  paint: null,           // markup for one frame of that scene
+  sheetAgent: null,      // agent open in the side sheet
   exportReport: null,
   tickAccumulator: 0,
   lastTick: 0,
@@ -167,7 +170,7 @@ function renderRunDetail(status) {
     ["Game", status.game],
     ["Encoding", `${status.encoding} · ${status.input_size} inputs`],
     ["Genome", `${fmt.int(status.genome_size)} params`],
-    ["Board", status.scene ? `${status.scene.width} × ${status.scene.height}` : "–"],
+    ["Scene", sceneText(status.scene)],
     ["Population", fmt.int(status.population_size)],
     ["Episodes", fmt.int(status.total_episodes)],
     ["Episodes / s", fmt.dec(status.episodes_per_second, 1)],
@@ -273,45 +276,200 @@ function renderChart(curve) {
 
 /* ---------------------------------------------------------------- replay */
 
-const STEP_DELTAS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+/* A game declares its drawing once, as a scene of layers and labels, and a
+   replay is every frame it drew, packed as changes by evolvarium/replays.py.
+   Each frame has one operation for each layer and label, in scene order: same,
+   shift (drop items from the front, append new ones), delta (every item moves
+   by a little) or full. Runs of identical operations are stored once, and the
+   numbers are zigzag varints in a second stream.
 
-/* Rebuild an agent's episode from the compact encoding the server sends: a
-   starting cell, one direction byte per step, and sparse lists of food changes
-   and growth points. Expanding once on load keeps the per-frame paint cheap. */
-function expandReplay(replay) {
-  if (!replay || !replay.steps) return { path: [], food: [], length: [], steps: 0 };
+   A cursor decodes forward on demand and keeps its state every KEY_EVERY
+   frames, so playing decodes one frame per tick and a seek backward replays
+   at most KEY_EVERY frames. */
 
-  const bytes = atob(replay.dirs || "");
-  const path = new Array(replay.steps);
-  let [x, y] = replay.start;
-  path[0] = [x, y];
-  for (let i = 0; i < bytes.length && i + 1 < replay.steps; i++) {
-    const [dx, dy] = STEP_DELTAS[bytes.charCodeAt(i) & 3];
-    x += dx; y += dy;
-    path[i + 1] = [x, y];
+const FIELDS = { cell: 2, dot: 2, box: 4, line: 4 };
+const SHIFT = 1, DELTA = 2, FULL = 3;
+const SHIFT_ESCAPE = 7, COUNT_ESCAPE = 63;
+const KEY_EVERY = 64;
+
+function byteStream(text) {
+  const raw = atob(text);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return { bytes, at: 0 };
+}
+
+function unsigned(input) {
+  let value = 0, scale = 1, byte;
+  do {
+    byte = input.bytes[input.at++];
+    value += (byte & 0x7f) * scale;
+    scale *= 128;
+  } while (byte >= 0x80);
+  return value;
+}
+
+function signed(input) {
+  const value = unsigned(input);
+  return value % 2 ? -(value + 1) / 2 : value / 2;
+}
+
+class ReplayCursor {
+  constructor(scene, replay) {
+    this.fields = scene.layers.map((layer) => FIELDS[layer.shape])
+      .concat(scene.labels.map(() => 1));
+    this.frames = replay.frames;
+    this.truncated = Boolean(replay.truncated);
+    this.ops = byteStream(replay.ops);
+    this.data = byteStream(replay.data);
+    this.keys = [];
+    this.index = -1;
+    this.run = 0;
+    this.codes = null;
+    this.state = this.fields.map(() => []);
+    this.start = this.mark();
   }
 
-  // Forward-fill food position and body length across every step.
-  const food = new Array(replay.steps);
-  let cursor = 0;
-  let current = replay.food.length ? [replay.food[0][1], replay.food[0][2]] : [0, 0];
-  for (let i = 0; i < replay.steps; i++) {
-    while (cursor < replay.food.length && replay.food[cursor][0] <= i) {
-      current = [replay.food[cursor][1], replay.food[cursor][2]];
-      cursor++;
+  // Lists are replaced, never changed in place, so a mark can share them.
+  mark() {
+    return {
+      index: this.index, opsAt: this.ops.at, dataAt: this.data.at,
+      run: this.run, codes: this.codes, state: this.state.slice(),
+    };
+  }
+
+  restore(mark) {
+    this.index = mark.index;
+    this.ops.at = mark.opsAt;
+    this.data.at = mark.dataAt;
+    this.run = mark.run;
+    this.codes = mark.codes;
+    this.state = mark.state.slice();
+  }
+
+  /* Each layer's items, in replay units, at `frame`. */
+  seek(frame) {
+    const target = Math.max(0, Math.min(frame, this.frames - 1));
+    const key = this.keys[Math.min(Math.floor(target / KEY_EVERY), this.keys.length - 1)]
+      || this.start;
+    if (target < this.index || key.index > this.index) this.restore(key);
+    while (this.index < target) this.step();
+    return this.state;
+  }
+
+  item(before) {
+    const item = new Array(before.length);
+    for (let i = 0; i < before.length; i++) item[i] = before[i] + signed(this.data);
+    return item;
+  }
+
+  step() {
+    if (!this.run) {
+      this.run = unsigned(this.ops);
+      this.codes = this.ops.bytes.subarray(this.ops.at, this.ops.at + this.fields.length);
+      this.ops.at += this.fields.length;
     }
-    food[i] = current;
+    this.run--;
+    const state = this.state;
+    for (let c = 0; c < this.codes.length; c++) {
+      const code = this.codes[c];
+      const kind = code & 3;
+      if (kind === SHIFT) {
+        let count = code >> 5;
+        if (count === SHIFT_ESCAPE) count = unsigned(this.data);
+        const items = state[c].slice(code >> 2 & 7);
+        for (let k = 0; k < count; k++) items.push(this.item(items[items.length - 1]));
+        state[c] = items;
+      } else if (kind === DELTA) {
+        state[c] = state[c].map((item) => this.item(item));
+      } else if (kind === FULL) {
+        let count = code >> 2;
+        if (count === COUNT_ESCAPE) count = unsigned(this.data);
+        const items = [];
+        let before = new Array(this.fields[c]).fill(0);
+        for (let k = 0; k < count; k++) items.push(before = this.item(before));
+        state[c] = items;
+      }
+    }
+    this.index++;
+    const slot = this.index / KEY_EVERY;
+    if (Number.isInteger(slot) && !this.keys[slot]) this.keys[slot] = this.mark();
   }
+}
 
-  const length = new Array(replay.steps);
-  let grown = 0;
-  let size = replay.start_length || 3;
-  for (let i = 0; i < replay.steps; i++) {
-    while (grown < replay.grow.length && replay.grow[grown] <= i) { size++; grown++; }
-    length[i] = size;
+function cursorOf(agent) {
+  if (agent._cursor === undefined) {
+    const replay = agent.replay;
+    // Replays from before scenes have no operation stream and are not drawn.
+    agent._cursor = state.scene && replay && replay.ops != null && replay.frames > 0
+      ? new ReplayCursor(state.scene, replay)
+      : null;
   }
+  return agent._cursor;
+}
 
-  return { path, food, length, steps: replay.steps };
+const trim = (v) => Math.round(v * 1000) / 1000;
+
+/* Markup for one frame of a scene. Positions arrive as whole multiples of the
+   scene's unit and are drawn in a viewBox of the scene's size, with y turned
+   over for a scene whose y grows upward. */
+function makePainter(scene) {
+  const { width, height, unit } = scene;
+  const [ox, oy] = scene.origin;
+  const x = (v) => trim(v * unit - ox);
+  // Screen top of something reaching `h` from game y `v`.
+  const top = scene.y_up ? (v, h) => oy + height - v * unit - h : (v) => v * unit - oy;
+
+  const layers = scene.layers.map((layer) => {
+    const s = layer.size;
+    let shape;
+    if (layer.shape === "cell") {
+      const inset = (1 - s) / 2;
+      const rest = `width="${trim(s)}" height="${trim(s)}" rx="${trim(layer.rounded ? s / 2 : s * 0.16)}"`;
+      shape = (item) =>
+        `<rect x="${trim(item[0] * unit - ox + inset)}" y="${trim(top(item[1], 1) + inset)}" ${rest}`;
+    } else if (layer.shape === "dot") {
+      shape = (item) => `<circle cx="${x(item[0])}" cy="${trim(top(item[1], 0))}" r="${trim(s)}"`;
+    } else if (layer.shape === "box") {
+      shape = (item) => {
+        const w = item[2] * unit, h = item[3] * unit;
+        const rx = layer.rounded ? trim(Math.min(w, h) / 2) : 0;
+        return `<rect x="${x(item[0])}" y="${trim(top(item[1], h))}" width="${trim(w)}" height="${trim(h)}" rx="${rx}"`;
+      };
+    } else {
+      shape = (item) =>
+        `<line x1="${x(item[0])}" y1="${trim(top(item[1], 0))}" x2="${x(item[2])}" y2="${trim(top(item[3], 0))}" stroke-width="${trim(s)}"`;
+    }
+
+    return (items) => {
+      const n = items.length;
+      if (!n) return "";
+      let out = `<g class="tone-${layer.tone}">`;
+      for (let i = 0; i < n; i++) {
+        out += shape(items[i]);
+        if (layer.fade) out += ` opacity="${(0.4 + (0.55 * (i + 1)) / (n + 1)).toFixed(2)}"`;
+        out += "/>";
+      }
+      return `${out}</g>`;
+    };
+  });
+
+  return (lists) => layers.map((paint, i) => paint(lists[i])).join("");
+}
+
+/* The labels of a decoded frame, as text kept to their digits. */
+function labelText(scene, lists) {
+  const first = scene.layers.length;
+  return scene.labels.map((label, j) => {
+    const item = lists[first + j][0];
+    return (item ? item[0] * 10 ** -label.digits : 0).toFixed(label.digits);
+  });
+}
+
+function sceneText(scene) {
+  if (!scene) return "–";
+  const layers = scene.layers.length;
+  return `${trim(scene.width)} × ${trim(scene.height)} · ${layers} layer${layers === 1 ? "" : "s"}`;
 }
 
 /* ---------------------------------------------------------------- generation */
@@ -330,15 +488,19 @@ async function loadGeneration(number) {
   }
 
   state.generation = data;
-  state.board = data.scene;
+  state.scene = data.scene || null;
+  state.paint = state.scene ? makePainter(state.scene) : null;
   state.agents = data.agents || [];
-  for (const agent of state.agents) agent.episode = expandReplay(agent.replay);
-  state.maxFrames = state.agents.reduce((m, a) => Math.max(m, a.episode.steps), 0);
+  state.maxFrames = state.agents.reduce((m, a) => Math.max(m, cursorOf(a)?.frames ?? 0), 0);
   state.frame = 0;
   $("frame-range").max = String(Math.max(0, state.maxFrames - 1));
 
   renderGenerationSummary(data.summary);
   renderGrid();
+  if (state.sheetAgent) {
+    const same = state.agents.find((a) => a.id === state.sheetAgent.id);
+    if (same) showAgent(same);
+  }
   syncScrubber();
   if (state.curve) renderChart(state.curve);
 }
@@ -381,13 +543,19 @@ function sortedAgents() {
   return state.limit > 0 ? copy.slice(0, state.limit) : copy;
 }
 
+function viewBox() {
+  const scene = state.scene;
+  return scene ? `0 0 ${trim(scene.width)} ${trim(scene.height)}` : "0 0 1 1";
+}
+
 function renderGrid() {
   const grid = $("grid");
   grid.innerHTML = "";
   const agents = sortedAgents();
+  state.shown = agents;
   if (!agents.length) return;
 
-  const { width, height } = state.board;
+  const box = viewBox();
   const fragment = document.createDocumentFragment();
 
   agents.forEach((agent, rank) => {
@@ -397,7 +565,8 @@ function renderGrid() {
     card.tabIndex = 0;
 
     const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("class", "stage");
+    svg.setAttribute("viewBox", box);
     svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
     card.appendChild(svg);
 
@@ -422,47 +591,37 @@ function renderGrid() {
   paintFrame();
 }
 
-function paintFrame() {
-  const agents = sortedAgents();
-  const { width, height } = state.board;
-  const frame = state.frame;
+/* Draw an agent's replay at the current frame into `svg`, returning its
+   cursor, or null when there is nothing to draw. */
+function paintAgent(agent, svg) {
+  const cursor = cursorOf(agent);
+  if (!cursor || !state.paint) { svg.innerHTML = ""; return null; }
+  try {
+    svg.innerHTML = state.paint(cursor.seek(state.frame));
+    return cursor;
+  } catch {
+    // A replay that cannot be read stays blank rather than stopping playback.
+    agent._cursor = null;
+    svg.innerHTML = "";
+    return null;
+  }
+}
 
-  for (const agent of agents) {
+function paintFrame() {
+  for (const agent of state.shown) {
     const svg = agent._svg;
     if (!svg) continue;
-    const episode = agent.episode;
-    if (!episode || !episode.steps) { svg.innerHTML = ""; continue; }
-
-    const index = Math.min(frame, episode.steps - 1);
-    const [hx, hy] = episode.path[index];
-    const [fx, fy] = episode.food[index];
-    const bodyLength = Math.min(episode.length[index], index + 1);
-
-    let markup = `<rect x="0" y="0" width="${width}" height="${height}" fill="#080b11"/>`;
-    markup += `<rect class="cell-food" x="${fx + 0.12}" y="${fy + 0.12}" width="0.76" height="0.76" rx="0.38"/>`;
-
-    // Every step is stored, so the preceding `bodyLength` head positions are
-    // exactly the cells the body occupied at this moment.
-    for (let i = index - bodyLength + 1; i < index; i++) {
-      if (i < 0) continue;
-      const cell = episode.path[i];
-      if (!cell) continue;
-      const age = (i - (index - bodyLength)) / bodyLength;
-      markup += `<rect class="cell-body" x="${cell[0] + 0.06}" y="${cell[1] + 0.06}" width="0.88" height="0.88" rx="0.14" opacity="${(0.4 + age * 0.55).toFixed(2)}"/>`;
-    }
-    markup += `<rect class="cell-head" x="${hx + 0.03}" y="${hy + 0.03}" width="0.94" height="0.94" rx="0.18"/>`;
-
+    const cursor = paintAgent(agent, svg);
     // A replay that was cut short ends before the game did, so its last frame
-    // is not a death and must not be drawn as one.
-    const ended = index >= episode.steps - 1;
-    const cut = Boolean(agent.replay && agent.replay.truncated);
-    svg.parentElement.classList.toggle("dead", ended && !cut);
-    svg.parentElement.classList.toggle("cut", ended && cut);
-    svg.innerHTML = markup;
+    // is not an ending and must not be drawn as one.
+    const ended = cursor != null && cursor.index >= cursor.frames - 1;
+    svg.parentElement.classList.toggle("dead", ended && !cursor.truncated);
+    svg.parentElement.classList.toggle("cut", ended && cursor.truncated);
   }
+  if (state.sheetAgent) paintSheet();
 
-  $("frame-range").value = String(frame);
-  $("frame-label").textContent = `${frame} / ${Math.max(0, state.maxFrames - 1)}`;
+  $("frame-range").value = String(state.frame);
+  $("frame-label").textContent = `${state.frame} / ${Math.max(0, state.maxFrames - 1)}`;
 }
 
 function tick(now) {
@@ -470,11 +629,12 @@ function tick(now) {
     if (!state.lastTick) state.lastTick = now;
     state.tickAccumulator += now - state.lastTick;
     const interval = TICK_MS * state.speed;
+    const before = state.frame;
     while (state.tickAccumulator >= interval) {
       state.tickAccumulator -= interval;
       state.frame = (state.frame + 1) % state.maxFrames;
     }
-    paintFrame();
+    if (state.frame !== before) paintFrame();
   }
   state.lastTick = now;
   requestAnimationFrame(tick);
@@ -483,8 +643,13 @@ function tick(now) {
 /* ---------------------------------------------------------------- agent sheet */
 
 function showAgent(agent) {
+  state.sheetAgent = agent;
   $("agent-sheet").hidden = false;
   $("sheet-title").textContent = agent.id;
+  const cursor = cursorOf(agent);
+  const reads = ["frame", ...(state.scene ? state.scene.labels.map((l) => l.name) : [])]
+    .map((name) => `<div class="read"><span>${escape(name)}</span><span>–</span></div>`)
+    .join("");
 
   const terms = agent.terms || {};
   const termRows = Object.entries(terms)
@@ -493,6 +658,9 @@ function showAgent(agent) {
     .join("");
 
   $("sheet-body").innerHTML = `
+    <svg class="stage sheet-stage" id="sheet-stage" viewBox="${viewBox()}"
+         preserveAspectRatio="xMidYMid meet"></svg>
+    <div class="readout" id="sheet-readout">${reads}</div>
     <dl class="detail">
       <dt>Rank origin</dt><dd>${escape(agent.origin)}</dd>
       <dt>Generation</dt><dd>${agent.generation}</dd>
@@ -502,11 +670,28 @@ function showAgent(agent) {
       <dt>Best episode</dt><dd>${agent.best_episode_score}</dd>
       <dt>Mean steps</dt><dd>${fmt.dec(agent.steps, 1)}</dd>
       <dt>Ended by</dt><dd>${escape(String(agent.end ?? agent.death))}</dd>
-      <dt>Replay steps</dt><dd>${agent.episode ? agent.episode.steps : 0}${agent.replay && agent.replay.truncated ? " (truncated)" : ""}</dd>
+      <dt>Replay</dt><dd>${cursor ? `${cursor.frames} frames${cursor.truncated ? " (truncated)" : ""}` : "none"}</dd>
     </dl>
     <p class="section-label">Fitness terms</p>
     <dl class="detail">${termRows}</dl>
   `;
+  paintSheet();
+}
+
+/* The sheet plays the same frame as the grid, larger, with the scene's labels. */
+function paintSheet() {
+  const svg = $("sheet-stage");
+  if (!svg) return;
+  const cursor = paintAgent(state.sheetAgent, svg);
+  const values = $("sheet-readout").querySelectorAll(".read span:last-child");
+  if (!cursor) return;
+  values[0].textContent = `${cursor.index} / ${cursor.frames - 1}`;
+  labelText(state.scene, cursor.state).forEach((text, j) => { values[j + 1].textContent = text; });
+}
+
+function closeSheet() {
+  state.sheetAgent = null;
+  $("agent-sheet").hidden = true;
 }
 
 /* ---------------------------------------------------------------- export */
@@ -675,14 +860,14 @@ function bind() {
 
   $("btn-preview").addEventListener("click", previewExport);
   $("btn-export").addEventListener("click", doExport);
-  $("sheet-close").addEventListener("click", () => { $("agent-sheet").hidden = true; });
+  $("sheet-close").addEventListener("click", closeSheet);
 
   document.addEventListener("keydown", (e) => {
     if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
     if (e.key === "ArrowLeft") goTo((state.generation?.generation ?? 0) - 1);
     else if (e.key === "ArrowRight") goTo((state.generation?.generation ?? 0) + 1);
     else if (e.key === " ") { e.preventDefault(); $("btn-play").click(); }
-    else if (e.key === "Escape") $("agent-sheet").hidden = true;
+    else if (e.key === "Escape") closeSheet();
     else if (e.key.toLowerCase() === "c") $("btn-continue").click();
     else if (e.key.toLowerCase() === "l") follow();
   });

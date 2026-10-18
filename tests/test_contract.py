@@ -24,9 +24,12 @@ from evolvarium.contract import (
     Category,
     Choice,
     Game,
+    Label,
+    Layer,
     Number,
     Observation,
     Range,
+    Scene,
     load_settings,
     override,
     settings_dict,
@@ -63,7 +66,7 @@ class Herd(Game):
     ])
     actions = Actions(Choice("move", ("left", "stay", "right")), Range("stride", 0.5, 1.5))
 
-    def reset(self, seed, *, record=False):
+    def reset(self, seed):
         start = self.settings.start
         rng = np.random.default_rng(seed)
         self.positions = dict(zip(self.agents, rng.uniform(-start, start, 2).tolist(),
@@ -105,6 +108,14 @@ class Herd(Game):
     @property
     def steps(self):
         return self._steps
+
+    def scene(self):
+        start = self.settings.start
+        return Scene(2 * start + 2, 2, [Layer("herd", "dot", "agent", size=0.2)],
+                     [Label("spread", 2)], origin=(-start - 1, -1), y_up=True, unit=0.01)
+
+    def draw(self):
+        return {"herd": [(p, 0.0) for p in self.positions.values()], "spread": self.score}
 
 
 @dataclass(frozen=True)

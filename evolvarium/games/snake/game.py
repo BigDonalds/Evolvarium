@@ -8,20 +8,29 @@ from ...contract import (
     Actions,
     Choice,
     Game,
+    Label,
+    Layer,
     Milestone,
     Observation,
     Problems,
+    Scene,
     load_settings,
 )
 from .board import Turn
 from .engine import Episode
 from .features import FLOOD_FILL_SPECS, HORIZON_SPECS, FeatureSpec, available_specs
 from .fitness import evaluate
-from .replay import pack_replay
 from .settings import BoardConfig, EpisodeConfig, FeatureConfig, FitnessConfig, SnakeSettings
 
 ACTIONS = Actions(Choice("turn", ("left", "straight", "right")))
 _TURNS = {"left": Turn.LEFT, "straight": Turn.STRAIGHT, "right": Turn.RIGHT}
+# The body is listed from the tail, so a move drops the first cell and appends
+# the one the head left, and fades toward the tail.
+_LAYERS = (
+    Layer("food", "cell", "goal", size=0.76, rounded=True),
+    Layer("body", "cell", "trail", size=0.88, fade=True),
+    Layer("head", "cell", "agent", size=0.94),
+)
 
 
 class SnakeGame(Game):
@@ -44,8 +53,8 @@ class SnakeGame(Game):
 
     # -------------------------------------------------------------- episode
 
-    def reset(self, seed: int, *, record: bool = False) -> None:
-        self.episode = Episode(self.settings.board, self.settings.episode, seed, record=record)
+    def reset(self, seed: int) -> None:
+        self.episode = Episode(self.settings.board, self.settings.episode, seed)
 
     def observe(self, agent: str):
         return self._encode(self.episode, self._features)
@@ -83,12 +92,21 @@ class SnakeGame(Game):
             "looped": float(result.looped),
         }
 
-    def replay(self, max_steps: int) -> dict:
-        return pack_replay(self.episode.result, max_steps)
-
-    def scene(self) -> dict:
+    def scene(self) -> Scene:
         board = self.settings.board
-        return {"kind": "grid", "width": board.width, "height": board.height}
+        return Scene(board.width, board.height, _LAYERS, [Label("score")])
+
+    def draw(self) -> dict:
+        episode = self.episode
+        cells = episode.snake.cells()
+        body = list(reversed(cells))
+        head = body.pop()
+        return {
+            "food": [] if episode.food is None else [episode.food],
+            "body": body,
+            "head": [head],
+            "score": episode.score,
+        }
 
     def milestones(self, summaries: list[dict]) -> list[Milestone]:
         return milestones(summaries)

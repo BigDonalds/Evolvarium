@@ -16,8 +16,8 @@ Three rules keep them identical:
 * Workers return data, never objects the parent mutates. The parent applies
   results in the original order after every task completes.
 
-Replays are packed inside the worker by the game itself. A recorded episode can
-hold thousands of frame objects; packed it is a few kilobytes, and that
+Replays are packed inside the worker as the episode plays. A recorded episode
+can run to thousands of frames; packed it is a few kilobytes, and that
 difference is the difference between a speedup and a serialisation bottleneck.
 """
 
@@ -32,6 +32,7 @@ import numpy as np
 from .. import games
 from ..contract import Outcome
 from ..nn.network import Architecture, PolicyNetwork
+from ..replays import Recorder
 
 
 @dataclass(frozen=True)
@@ -73,10 +74,15 @@ class _Runner:
         self.game = games.create(ctx.game, ctx.settings)
         self.network = PolicyNetwork(Architecture.from_dict(ctx.architecture))
         self.higher = self.game.direction == "higher"
+        self.scene = self.game.scene()
 
     def play(self, genome: np.ndarray, seed: int, record: bool) -> Outcome:
         game = self.game
-        game.reset(seed, record=record)
+        game.reset(seed)
+        recorder = None
+        if record and self.scene is not None:
+            recorder = Recorder(self.scene, self.ctx.replay_steps)
+            recorder.add(game.draw())
         forward = self.network.load(genome).forward
         rate = self.ctx.exploration_rate
         # Seeded from the episode, so exploration is reproducible and identical
@@ -98,6 +104,11 @@ class _Runner:
                 else:
                     actions[agent] = decode(forward(encode(observe(agent))))
             step(actions)
+            if recorder is not None:
+                if recorder.full:
+                    recorder.truncated = True
+                else:
+                    recorder.add(game.draw())
 
         fitness, terms = game.goal()
         return Outcome(
@@ -107,7 +118,7 @@ class _Runner:
             fitness=fitness,
             terms=terms,
             signals=game.signals(),
-            replay=game.replay(self.ctx.replay_steps) if record else None,
+            replay=None if recorder is None else recorder.pack(),
         )
 
     def score(self, genome: np.ndarray, base_seed: int, trials: int, record: bool) -> EvalResult:

@@ -8,7 +8,7 @@ individuals and makes a recorded replay reproducible.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 from .board import Board, Cell, Direction, Turn
@@ -23,16 +23,6 @@ class DeathCause(str, Enum):
     STARVATION = "starvation"
     STEP_LIMIT = "step_limit"
     BOARD_FILLED = "board_filled"
-
-
-@dataclass
-class Frame:
-    """One recorded tick, kept deliberately small: replays store many of these."""
-
-    head: Cell
-    food: Cell
-    length: int
-    score: int
 
 
 @dataclass
@@ -53,24 +43,15 @@ class EpisodeResult:
     # Set when the fatal move had a legal alternative. Distinguishes a mistake
     # from being boxed in, which is the consequence of much earlier choices.
     avoidable_death: bool = False
-    frames: list[Frame] = field(default_factory=list)
 
 
 class Episode:
-    """A single game. `record` controls whether frames are retained."""
+    """A single game."""
 
-    def __init__(
-        self,
-        board_config: BoardConfig,
-        episode_config: EpisodeConfig,
-        seed: int,
-        *,
-        record: bool = False,
-    ):
+    def __init__(self, board_config: BoardConfig, episode_config: EpisodeConfig, seed: int):
         self.board = Board(board_config.width, board_config.height)
         self.rules = episode_config
         self.rng = random.Random(seed)
-        self.record = record
 
         head = (self.board.width // 2, self.board.height // 2)
         self.snake = Snake(head, Direction.UP, board_config.initial_length)
@@ -130,14 +111,6 @@ class Episode:
                 return self._finish(DeathCause.BOARD_FILLED, target)
         else:
             self.steps_since_food += 1
-
-        if self.record:
-            self.result.frames.append(
-                Frame(
-                    head=target, food=self.food or target,
-                    length=len(self.snake), score=self.score,
-                )
-            )
 
         self._recent.append(target)
         if len(self._recent) > 60:

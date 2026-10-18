@@ -85,6 +85,11 @@ the ones that others leave without effect, and the run uses all three before it
 starts. `tests/test_contract.py` trains one with two agents and a score that is
 better lower.
 
+A game that declares a `scene` can be watched on the dashboard. The scene lists
+layers of cells, dots, boxes or lines and labels such as the score, and `draw`
+returns each layer's items and each label's value after every step of a recorded
+episode. The dashboard draws any game from that without running its code.
+
 ## Exported models
 
 `python -m evolvarium export`, or the export panel on the dashboard, writes a

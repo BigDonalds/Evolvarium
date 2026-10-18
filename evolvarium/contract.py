@@ -11,7 +11,7 @@ needs to know which game is being trained.
         observation = Observation([Number("distance"), Category("side", ("left", "right"))])
         actions = Actions(Choice("move", ("left", "stay", "right")))
 
-        def reset(self, seed, *, record=False): ...
+        def reset(self, seed): ...
         def observe(self, agent): return {"distance": 3.0, "side": "left"}
         def step(self, actions): ...   # actions == {"agent": "stay"}
 
@@ -20,6 +20,10 @@ Each step the engine asks every agent named in `agents` for its observation,
 picks an action for each, then hands all of them to `step` together, so a group
 of agents shares one episode. `over`, `end`, `score` and `steps` are read once
 the episode is over.
+
+A game that declares a `scene` can be watched. While an episode is recorded the
+engine calls `draw` after the reset and after every step, and the dashboard
+draws the frames it returns, so it shows any game without running its code.
 """
 
 from __future__ import annotations
@@ -305,6 +309,116 @@ class Milestone:
         }
 
 
+# ------------------------------------------------------------------- scenes
+
+# How many numbers make one item of each shape.
+SHAPES = {"cell": 2, "dot": 2, "box": 4, "line": 4}
+# Roles rather than colours, so the dashboard's theme picks the colours.
+TONES = ("agent", "trail", "goal", "bonus", "hazard", "wall", "ink")
+_SIZES = {"cell": 0.9, "dot": 0.5, "box": 0.0, "line": 0.1}
+
+
+class Layer:
+    """Items of one shape drawn in one tone, such as a snake's food.
+
+    Each item is a tuple of numbers. A `cell` is (x, y), the square of the grid
+    at whole-number x and y. A `dot` is (x, y), its centre. A `box` is
+    (x, y, width, height) from its corner nearest the origin, and a `line` is
+    (x1, y1, x2, y2).
+
+    `size` is the share of its square a cell fills, a dot's radius or a line's
+    width. `rounded` rounds the corners of cells and boxes fully, and `fade`
+    draws each item fainter the earlier it comes in the list, as for a body
+    listed from its tail.
+    """
+
+    __slots__ = ("name", "shape", "tone", "size", "rounded", "fade")
+
+    def __init__(self, name: str, shape: str = "cell", tone: str = "agent", *,
+                 size: float | None = None, rounded: bool = False, fade: bool = False):
+        if shape not in SHAPES:
+            raise ValueError(f"layer {name!r} has shape {shape!r}; the shapes are {list(SHAPES)}")
+        if tone not in TONES:
+            raise ValueError(f"layer {name!r} has tone {tone!r}; the tones are {list(TONES)}")
+        size = _SIZES[shape] if size is None else float(size)
+        if size < 0:
+            raise ValueError(f"layer {name!r} has size {size}; it cannot be negative")
+        self.name = name
+        self.shape = shape
+        self.tone = tone
+        self.size = size
+        self.rounded = bool(rounded)
+        self.fade = bool(fade)
+
+    @property
+    def fields(self) -> int:
+        return SHAPES[self.shape]
+
+    def describe(self) -> dict:
+        return {
+            "name": self.name, "shape": self.shape, "tone": self.tone,
+            "size": self.size, "rounded": self.rounded, "fade": self.fade,
+        }
+
+
+class Label:
+    """A number shown beside the scene, such as the score, kept to `digits` decimals."""
+
+    __slots__ = ("name", "digits")
+
+    def __init__(self, name: str, digits: int = 0):
+        if not 0 <= digits <= 6:
+            raise ValueError(f"label {name!r} keeps {digits} decimals; it can keep 0 to 6")
+        self.name = name
+        self.digits = int(digits)
+
+    def describe(self) -> dict:
+        return {"name": self.name, "digits": self.digits}
+
+
+class Scene:
+    """What the dashboard draws for a game, declared once.
+
+    The scene covers `width` by `height` from `origin`, in the game's own units,
+    with y growing downward, as on a screen, unless `y_up`. Layers are drawn in
+    order, each on top of the ones before it, and labels are shown beside the
+    drawing. Replays keep positions in whole multiples of `unit`: a game on a
+    grid keeps the default of 1, and a game in continuous space chooses how
+    finely its replays keep position.
+    """
+
+    def __init__(self, width: float, height: float, layers: Sequence[Layer],
+                 labels: Sequence[Label | str] = (), *, origin: tuple[float, float] = (0.0, 0.0),
+                 y_up: bool = False, unit: float = 1.0):
+        if not (width > 0 and height > 0):
+            raise ValueError(f"a scene needs a size above 0, not {width} by {height}")
+        if not unit > 0:
+            raise ValueError(f"a scene's unit must be above 0, not {unit}")
+        self.layers = tuple(layers)
+        if not self.layers:
+            raise ValueError("a scene needs at least one layer")
+        self.labels = tuple(Label(label) if isinstance(label, str) else label for label in labels)
+        names = [part.name for part in (*self.layers, *self.labels)]
+        if len(set(names)) != len(names):
+            raise ValueError("scene layers and labels need distinct names")
+        self.width = float(width)
+        self.height = float(height)
+        self.origin = (float(origin[0]), float(origin[1]))
+        self.y_up = bool(y_up)
+        self.unit = float(unit)
+
+    def describe(self) -> dict:
+        return {
+            "width": self.width,
+            "height": self.height,
+            "origin": list(self.origin),
+            "y_up": self.y_up,
+            "unit": self.unit,
+            "layers": [layer.describe() for layer in self.layers],
+            "labels": [label.describe() for label in self.labels],
+        }
+
+
 # --------------------------------------------------------------------- game
 
 
@@ -341,8 +455,8 @@ class Game:
 
     # -------------------------------------------------------------- episode
 
-    def reset(self, seed: int, *, record: bool = False) -> None:
-        """Start a new episode. `record` asks the game to keep what `replay` needs."""
+    def reset(self, seed: int) -> None:
+        """Start a new episode."""
         raise NotImplementedError
 
     def observe(self, agent: str):
@@ -384,17 +498,21 @@ class Game:
         """Named measurements of the finished episode, beyond its score."""
         return {}
 
-    def replay(self, max_steps: int) -> dict | None:
-        """A compact record of the finished episode for the dashboard.
+    # -------------------------------------------------------------- watching
 
-        Called only after an episode reset with `record=True`. `max_steps` of 0
-        means the whole episode.
+    def scene(self) -> Scene | None:
+        """What the dashboard draws for this game, or None to draw nothing."""
+        return None
+
+    def draw(self) -> dict:
+        """The current frame of `scene`: each layer's items and each label's value.
+
+        Called after `reset` and after each step of an episode being recorded,
+        so it must leave the episode as it found it. A layer's items come as a
+        list of tuples laid out as its shape says, and a label's value as a
+        number.
         """
-        return None
-
-    def scene(self) -> dict | None:
-        """What the dashboard draws for this game: its kind and its size."""
-        return None
+        return {}
 
     def milestones(self, summaries: list[dict]) -> list[Milestone]:
         """Achievements read from a run's generation summaries."""

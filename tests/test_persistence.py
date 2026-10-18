@@ -312,43 +312,6 @@ def test_run_free_disables_holding():
     assert gate.state().hold_enabled is False
 
 
-def test_replay_path_is_contiguous(small_config):
-    """Every stored step must be adjacent to the last, or bodies cannot be drawn."""
-    import base64
-
-    population = Population(small_config, seed=21)
-    outcome = population.evaluate_individual(population.members[0], base_seed=1, record=True)
-    packed = outcome.replay
-
-    assert packed is not None, "recording was requested, so a replay must come back"
-    directions = base64.b64decode(packed["dirs"])
-    assert len(directions) == max(packed["steps"] - 1, 0)
-
-    # Walking the stored directions must trace a connected path on the board.
-    deltas = [(0, -1), (1, 0), (0, 1), (-1, 0)]
-    x, y = packed["start"]
-    seen = [(x, y)]
-    for step in directions:
-        dx, dy = deltas[step & 3]
-        x, y = x + dx, y + dy
-        assert abs(x - seen[-1][0]) + abs(y - seen[-1][1]) == 1
-        seen.append((x, y))
-    assert len(seen) == packed["steps"]
-
-
-def test_replay_growth_matches_score(small_config):
-    population = Population(small_config, seed=22)
-    for member in population.members:
-        outcome = population.evaluate_individual(member, base_seed=5, record=True)
-        packed = outcome.replay
-        # The recorded episode is trial 0; growth points in it must match the
-        # food that episode ate.
-        if packed["grow"]:
-            assert packed["food"], "a scoring episode must record food changes"
-            assert len(packed["grow"]) <= outcome.best_episode_score
-            return
-
-
 def test_every_run_writes_a_manifest_with_its_seed(small_config):
     """A run must say what produced it before it produces anything."""
     import json
@@ -373,17 +336,3 @@ def test_default_replays_record_the_whole_game():
     steps = CONFIG.history.replay_steps
     assert steps == 0 or steps >= SnakeSettings().episode.max_steps
 
-
-def test_replay_marks_itself_truncated_only_when_cut():
-    from evolvarium.games.snake.engine import EpisodeResult, Frame
-    from evolvarium.games.snake.replay import pack_replay
-
-    result = EpisodeResult()
-    result.frames = [Frame(head=(i % 14, i // 14), food=(0, 0), length=3, score=0)
-                     for i in range(50)]
-
-    whole = pack_replay(result, 0)
-    assert whole["steps"] == 50 and whole["truncated"] is False
-
-    cut = pack_replay(result, 20)
-    assert cut["steps"] == 20 and cut["truncated"] is True

@@ -21,6 +21,16 @@
   --warn: #fbbf24;
   --dead: #4b5563;
 
+  /* A game's scene names a role for each layer; the colour is chosen here. */
+  --stage: #080b11;
+  --tone-agent: var(--accent);
+  --tone-trail: var(--accent-dim);
+  --tone-goal: var(--food);
+  --tone-bonus: #38bdf8;
+  --tone-hazard: #fb923c;
+  --tone-wall: #34405a;
+  --tone-ink: var(--text-dim);
+
   --radius: 10px;
   --radius-sm: 6px;
   --gap: 16px;
@@ -353,7 +363,7 @@ input[type="range"]::-moz-range-thumb {
 /* The replay stopped recording; the game itself carried on. */
 .agent.cut { border-style: dashed; border-color: var(--warn); }
 
-.agent svg { width: 100%; display: block; border-radius: 3px; background: #080b11; }
+.stage { width: 100%; display: block; border-radius: 3px; background: var(--stage); }
 .agent .cap {
   display: flex;
   justify-content: space-between;
@@ -367,9 +377,15 @@ input[type="range"]::-moz-range-thumb {
 .agent .cap .sc { color: var(--accent); }
 .agent .cap .rk { color: var(--text-faint); }
 
-.cell-body { fill: var(--accent-dim); }
-.cell-head { fill: var(--accent); }
-.cell-food { fill: var(--food); }
+.stage rect, .stage circle { fill: currentColor; }
+.stage line { stroke: currentColor; stroke-linecap: round; }
+.tone-agent { color: var(--tone-agent); }
+.tone-trail { color: var(--tone-trail); }
+.tone-goal { color: var(--tone-goal); }
+.tone-bonus { color: var(--tone-bonus); }
+.tone-hazard { color: var(--tone-hazard); }
+.tone-wall { color: var(--tone-wall); }
+.tone-ink { color: var(--tone-ink); }
 
 .empty { text-align: center; color: var(--text-faint); padding: 30px 0; font-size: 13px; }
 .grid:not(:empty) + .empty { display: none; }
@@ -467,6 +483,14 @@ input[type="range"]::-moz-range-thumb {
 }
 .sheet-head h3 { font-size: 12px; font-family: var(--mono); color: var(--text-dim); }
 .sheet-body { padding: 14px 15px; }
+.sheet-stage { max-height: 42vh; margin-bottom: 10px; }
+
+.readout { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-bottom: 14px; }
+.read { display: flex; flex-direction: column; gap: 1px; }
+.read span:first-child {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-faint);
+}
+.read span:last-child { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
 
 /* ------------------------------------------------------------------ toast */
 

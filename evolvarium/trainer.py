@@ -248,7 +248,7 @@ class Trainer:
             "input_size": population.game.observation.size,
             "actions": list(population.game.actions.names),
             "genome_size": population.architecture.genome_size,
-            "scene": population.game.scene(),
+            "scene": population.scene,
             "resumed_from": self.resumed_from,
             "workers": self.workers,
             "last_generation": report.to_dict() if report else None,

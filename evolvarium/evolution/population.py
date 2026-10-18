@@ -76,6 +76,9 @@ class Population:
         self.rng = np.random.default_rng(seed)
         self.game = games.create(config.game, config.settings)
         self.higher = self.game.direction == "higher"
+        # Described once, as the dashboard reads it with every generation.
+        scene = self.game.scene()
+        self.scene = None if scene is None else scene.describe()
         self.architecture = Architecture.from_config(
             config.network, self.game.observation.size, self.game.actions.size
         )

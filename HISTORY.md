@@ -10,6 +10,79 @@ directly.
 
 ---
 
+## Scenes - a game draws its own frames, the dashboard draws any game
+
+At the baseline the dashboard drew Snake and nothing else. A replay was Snake's
+own: a start cell, one heading per step, and the steps where the food moved or
+the snake grew. The page rebuilt the body from the path and painted the head,
+body and food itself, and `scene()` gave only the board's kind and size. Another
+game trained, but watching it needed a packer of its own in Python and drawing
+code of its own in the page.
+
+**Scenes.** A game now declares a `Scene` once: its size and origin in its own
+units, which way y grows, its layers and its labels. A layer is a list of cells,
+dots, boxes or lines drawn in one tone, such as agent, goal or hazard. Tones name
+roles rather than colours, so the page's theme picks the colours. A label is a
+number shown beside the drawing, kept to a set number of decimals. While an
+episode is recorded the engine calls `draw` after the reset and after every
+step, and the game returns each layer's items and each label's value. Snake's
+scene is its board, with layers for the food, the body and the head, and the
+score as a label. The body is listed from the tail and fades toward it. Snake no
+longer keeps frames or packs its replay, and `reset` no longer takes `record`.
+Herd, the test game, draws its two agents as dots on a line where y grows
+upward, kept to a hundredth of a unit.
+
+**Replays.** `evolvarium/replays.py` packs the frames in the worker as the
+episode plays. Each frame gives every layer and label one operation: nothing
+changed, a shift that drops items from the front of the list and appends new
+ones, a delta that stores each item's change, or the whole list again. A snake's
+move is one shift whatever its length, its tail dropped and the cell the head
+left appended. Something that drifts a little each step is a delta of small
+numbers. Positions are stored as whole multiples of the scene's unit and labels
+to their decimals, so every stored number is an integer. Operations and numbers
+go in two streams of variable-length integers, and frames that repeat the
+operations of the frame before share one run. A replay is plain JSON data, and
+`unpack` reads it back into frames.
+
+**Size.** The format cannot know that a snake moves one cell at a time, so it is
+larger than Snake's own. Twelve held-out games of the 81.5 model came to 66.4 KiB
+before and 217.8 KiB after, or 16.4 and 22.8 KiB compressed. Generation 154 of a
+real run came to 609 KiB before and 2,135 KiB after, or 108 and 151 KiB
+compressed. Replays are kept on disk compressed, so a run's history takes about
+1.4 times the space it did.
+
+**Sending it.** The server compresses any response of 1 KiB or more for a
+browser that accepts gzip. At level 5, generation 154's 2,178 KiB of JSON came to
+188 KiB in 24 ms. Level 1 took 14 ms and left 515 KiB, and level 6 took 38 ms
+for 163 KiB.
+
+**Speed.** Drawing and packing cost about 10 µs a step, 8 to 9% of a recorded
+episode. Only recorded episodes pay it, so it comes to about 2% of a
+generation's time, against about 0.5% for Snake's own packing.
+
+**The page.** The dashboard reads the scene sent with each generation and draws
+every layer as SVG from it, so nothing that draws a replay knows the game. A
+replay is read with a cursor that keeps its state every 64 frames, and moving to
+any frame starts from the nearest one kept. Reading a whole 4,007-frame Snake
+replay takes 18 ms and a random seek about 20 µs. Moving all 60 agents on the
+grid to their last frame takes 7.8 ms the first time and 2.7 ms after. The agent
+sheet plays the same frame larger, with the frame number and the labels beside
+it. A replay that cannot be read stays blank rather than stopping playback.
+Replays archived in the old format are not drawn.
+
+**Checking it.** `tests/test_replays.py` has 24 tests: every kind of operation
+and the counts too large for an operation byte, random edits, rounding to the
+unit and the decimals, a moving body costing a few bytes a frame whatever its
+length, a limited recorder, frames and scenes that do not fit, recording that
+leaves the game as it was, Snake's replays against the games they recorded,
+truncation, and a game in continuous space. `tests/test_server.py` checks when
+the server compresses, that a generation's replays unpack against its scene, and
+that the status describes the scene. In the browser, the page's reader was
+compared with `unpack` frame by frame on four replays: 700 frames using every
+shape, operation and escape, and three Snake games of 2,238 to 4,007 frames.
+Every frame matched, and 400 random seeks on each landed on the right frame.
+The 60 held-out games replay unchanged.
+
 ## Model files for any game's actions - parts, ranges and version 2
 
 The model file held a list of action names and took the highest output, so only
