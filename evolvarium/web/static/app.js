@@ -209,25 +209,25 @@ async function loadRuns() {
   refreshCompared();
 }
 
-function runText(run) {
+function runNote(run) {
   const where = run.live ? "training here"
     : writing(run) ? "recently written"
       : `${fmt.int(run.generations)} gens`;
-  return `${run.run_id} · ${run.game} · ${where}`;
+  return `${run.game} · ${where}`;
 }
 
 function renderRunPicker() {
   const select = $("run-select");
   const markup = state.runs
-    .map((run) => `<option value="${escape(run.run_id)}">${escape(runText(run))}</option>`)
+    .map((run) => `<option value="${escape(run.run_id)}" data-note="${escape(runNote(run))}">${escape(run.run_id)}</option>`)
     .join("");
-  // Rebuilding the list while it is open would close it.
   if (select.dataset.markup !== markup) {
     select.innerHTML = markup;
     select.dataset.markup = markup;
   }
   select.value = state.run || "";
   select.hidden = !state.runs.length;
+  syncPicker(select);
 }
 
 /* Show `runId`, starting over everything that belongs to the run. */
@@ -262,6 +262,7 @@ function show(runId, chosen) {
   $("grid").innerHTML = "";
   $("gen-summary").innerHTML = "";
   $("frame-range").max = "0";
+  fillRange($("frame-range"));
   for (const id of ["m-gen", "m-best", "m-mean", "m-stag", "m-eps", "m-rate"]) $(id).textContent = "–";
   $("run-detail").innerHTML = "";
   $("direction").textContent = "";
@@ -273,7 +274,7 @@ function show(runId, chosen) {
 
   document.body.classList.toggle("no-run", !runId);
   if (!runId) {
-    document.title = "evolvarium";
+    document.title = "Evolvarium";
     return;
   }
   $("run-id").textContent = runId;
@@ -332,7 +333,7 @@ function setStateChip(kind, text) {
 
 function renderStatus(status) {
   $("run-id").textContent = `${status.game} · ${status.run_id}`;
-  document.title = `${status.run_id} · evolvarium`;
+  document.title = `${status.run_id} · Evolvarium`;
   $("m-gen").textContent = fmt.int(status.generation);
   $("m-best").textContent = fmt.num(status.best_ever_score);
   $("m-stag").textContent = fmt.int(status.stagnation);
@@ -1056,6 +1057,7 @@ function paintFrame() {
   if (state.sheetAgent) paintSheet();
 
   $("frame-range").value = String(state.frame);
+  fillRange($("frame-range"));
   $("frame-label").textContent = `${state.frame} / ${Math.max(0, state.maxFrames - 1)}`;
 }
 
@@ -1378,7 +1380,7 @@ async function doExport() {
 async function openDrawer() {
   $("drawer").hidden = false;
   if (!state.gamesLoaded) await loadGames();
-  $("new-game").focus();
+  pickerButtons.get($("new-game")).focus();
 }
 
 function closeDrawer() {
@@ -1393,6 +1395,7 @@ async function loadGames() {
       .map((game) => `<option value="${escape(game)}">${escape(game)}</option>`)
       .join("");
     select.value = data.default;
+    syncPicker(select);
     state.gamesLoaded = true;
     await loadSettings(select.value);
   } catch (error) {
@@ -1458,6 +1461,7 @@ function settingRow(row) {
   } else if (row.choices && !row.several) {
     input = document.createElement("select");
     input.className = "select";
+    input.dataset.picker = "mono";
     const options = row.choices.includes(row.value) ? row.choices : [row.value, ...row.choices];
     input.innerHTML = options.map((c) => `<option value="${escape(c)}">${escape(c)}</option>`).join("");
     input.value = row.value;
@@ -1477,11 +1481,14 @@ function settingRow(row) {
   state.settings.inputs.set(row.name, input);
 
   // Game settings keep their whole name; the rest are already under their section.
+  // Long names break after a dot or underscore rather than mid-word.
   const name = document.createElement("span");
   name.className = "setting-name";
-  name.textContent = row.group === "game" ? row.name : row.name.slice(row.group.length + 1);
+  const shown = row.group === "game" ? row.name : row.name.slice(row.group.length + 1);
+  name.innerHTML = escape(shown).replace(/[._]/g, "$&<wbr>");
   name.title = row.name;
   node.append(name, input);
+  if (input.tagName === "SELECT") picker(input);
 
   if (row.several) {
     const hint = document.createElement("small");
@@ -1733,6 +1740,7 @@ function syncScrubber() {
   range.max = String(last);
   const shown = state.generation ? state.generation.generation : last;
   range.value = String(shown);
+  fillRange(range);
   $("gen-jump").placeholder = `${first}–${last}`;
   $("btn-live").setAttribute("aria-pressed", String(state.following));
 }
@@ -1753,6 +1761,227 @@ function follow() {
   state.pinned = null;
   loadGeneration(null);
   syncScrubber();
+}
+
+/* The filled part of a range's track, which CSS cannot read from the value. */
+function fillRange(input) {
+  const min = Number(input.min) || 0;
+  const max = Number(input.max) || 0;
+  const share = max > min ? (Number(input.value) - min) / (max - min) : 0;
+  input.style.setProperty("--fill", `${(share * 100).toFixed(2)}%`);
+}
+
+function setPlaying(on) {
+  state.playing = on;
+  const button = $("btn-play");
+  button.dataset.playing = String(on);
+  button.title = on ? "Pause" : "Play";
+  button.setAttribute("aria-label", button.title);
+}
+
+/* ---------------------------------------------------------------- pickers */
+
+/* Every select is shown as a button that opens a list drawn here, since a
+   native list cannot be styled and looks different on every system. The
+   select stays in the button's wrapper, out of sight, and still holds the
+   value and fires the change the rest of the page listens for. An option can
+   carry a note in data-note and a select a label in data-label. One list
+   serves every picker, as only one is open at a time. */
+
+const CHEVRON_ICON = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5"/></svg>';
+const CHECK_ICON = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 12.5l4 4 9-9"/></svg>';
+
+const pickerButtons = new WeakMap();
+const pickers = { list: null, open: null, active: -1 };
+
+function picker(select) {
+  const wrap = document.createElement("span");
+  wrap.className = "picker";
+  if (select.dataset.picker) wrap.classList.add(select.dataset.picker);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "picker-button";
+  button.title = select.title;
+  button.setAttribute("role", "combobox");
+  button.setAttribute("aria-haspopup", "listbox");
+  button.setAttribute("aria-expanded", "false");
+  button.innerHTML = `<span class="picker-text"></span>${CHEVRON_ICON}`;
+  select.before(wrap);
+  wrap.append(button, select);
+  select.classList.add("picker-native");
+  select.tabIndex = -1;
+  select.setAttribute("aria-hidden", "true");
+
+  button.addEventListener("click", () => {
+    if (pickers.open === select) closePicker();
+    else openPicker(select);
+  });
+  button.addEventListener("keydown", (e) => pickerKey(e, select));
+  pickerButtons.set(select, button);
+  syncPicker(select);
+}
+
+/* Show the select's value on its button, after the page changed the select. */
+function syncPicker(select) {
+  const button = pickerButtons.get(select);
+  if (!button) return;
+  const option = select.options[select.selectedIndex];
+  let text = "";
+  if (select.dataset.label) text += `<span class="picker-label">${escape(select.dataset.label)}</span>`;
+  text += `<span class="picker-main">${escape(option ? option.text : "")}</span>`;
+  if (option && option.dataset.note) text += `<span class="picker-note">${escape(option.dataset.note)}</span>`;
+  button.querySelector(".picker-text").innerHTML = text;
+  button.disabled = select.disabled || !select.options.length;
+  button.parentElement.hidden = select.hidden;
+  if (pickers.open === select) {
+    if (button.disabled || select.hidden) closePicker();
+    else renderPickerList();
+  }
+}
+
+function openPicker(select) {
+  closePicker();
+  if (!pickers.list) {
+    const list = document.createElement("div");
+    list.id = "picker-list";
+    list.className = "picker-list";
+    list.setAttribute("role", "listbox");
+    list.hidden = true;
+    // Pressing on the list would otherwise take the focus from the button.
+    list.addEventListener("mousedown", (e) => e.preventDefault());
+    list.addEventListener("click", (e) => {
+      const option = e.target.closest(".picker-option");
+      if (option) pick(Number(option.dataset.index));
+    });
+    list.addEventListener("pointermove", (e) => {
+      const option = e.target.closest(".picker-option");
+      if (option) setActive(Number(option.dataset.index), false);
+    });
+    document.body.appendChild(list);
+    pickers.list = list;
+  }
+  const button = pickerButtons.get(select);
+  pickers.open = select;
+  button.setAttribute("aria-expanded", "true");
+  button.setAttribute("aria-controls", pickers.list.id);
+  pickers.list.hidden = false;
+  renderPickerList();
+  placePicker();
+  setActive(select.selectedIndex, true);
+}
+
+function renderPickerList() {
+  const select = pickers.open;
+  pickers.list.classList.toggle("mono", select.dataset.picker === "mono");
+  pickers.list.innerHTML = Array.from(select.options, (option, index) => {
+    const note = option.dataset.note ? `<span class="picker-note">${escape(option.dataset.note)}</span>` : "";
+    return `<div class="picker-option" role="option" id="picker-option-${index}" data-index="${index}"` +
+      ` aria-selected="${index === select.selectedIndex}">${CHECK_ICON}` +
+      `<span class="picker-main">${escape(option.text)}</span>${note}</div>`;
+  }).join("");
+  setActive(Math.min(pickers.active, select.options.length - 1), false);
+}
+
+/* Below the button, or above it when there is more room there, and never
+   past the edge of the window. */
+function placePicker() {
+  const list = pickers.list;
+  const box = pickerButtons.get(pickers.open).getBoundingClientRect();
+  const margin = 8;
+  const gap = 4;
+  const below = window.innerHeight - box.bottom - margin - gap;
+  const above = box.top - margin - gap;
+  list.style.minWidth = `${box.width}px`;
+  list.style.maxHeight = "";
+  const wanted = Math.min(320, list.scrollHeight);
+  const up = wanted > below && above > below;
+  list.style.maxHeight = `${Math.min(320, up ? above : below)}px`;
+  list.style.top = `${up ? box.top - gap - list.offsetHeight : box.bottom + gap}px`;
+  const left = Math.min(box.left, window.innerWidth - list.offsetWidth - margin);
+  list.style.left = `${Math.max(margin, left)}px`;
+}
+
+function pick(index) {
+  const select = pickers.open;
+  if (!select) return;
+  closePicker();
+  pickerButtons.get(select).focus();
+  if (index < 0 || index === select.selectedIndex) return;
+  select.selectedIndex = index;
+  syncPicker(select);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function closePicker() {
+  const select = pickers.open;
+  if (!select) return;
+  const button = pickerButtons.get(select);
+  button.setAttribute("aria-expanded", "false");
+  button.removeAttribute("aria-controls");
+  button.removeAttribute("aria-activedescendant");
+  pickers.list.hidden = true;
+  pickers.list.innerHTML = "";
+  pickers.open = null;
+  pickers.active = -1;
+}
+
+function setActive(index, reveal) {
+  const list = pickers.list;
+  const button = pickerButtons.get(pickers.open);
+  const options = list.children;
+  if (options[pickers.active]) options[pickers.active].classList.remove("active");
+  pickers.active = index;
+  const option = options[index];
+  if (!option) {
+    button.removeAttribute("aria-activedescendant");
+    return;
+  }
+  option.classList.add("active");
+  button.setAttribute("aria-activedescendant", option.id);
+  if (!reveal) return;
+  if (option.offsetTop < list.scrollTop) list.scrollTop = option.offsetTop - gapOf(list);
+  else if (option.offsetTop + option.offsetHeight > list.scrollTop + list.clientHeight) {
+    list.scrollTop = option.offsetTop + option.offsetHeight - list.clientHeight + gapOf(list);
+  }
+}
+
+function gapOf(list) {
+  return parseFloat(getComputedStyle(list).paddingTop) || 0;
+}
+
+/* Arrows open a closed list, as they do a native select. Enter and Space on a
+   closed one are the button's own click. */
+function pickerKey(e, select) {
+  const last = select.options.length - 1;
+  let handled = true;
+  if (pickers.open !== select) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") openPicker(select);
+    else handled = false;
+  } else if (e.key === "ArrowDown") setActive(Math.min(last, pickers.active + 1), true);
+  else if (e.key === "ArrowUp") setActive(Math.max(0, pickers.active - 1), true);
+  else if (e.key === "Home") setActive(0, true);
+  else if (e.key === "End") setActive(last, true);
+  else if (e.key === "Enter" || e.key === " ") pick(pickers.active);
+  else if (e.key === "Escape") closePicker();
+  else if (e.key === "Tab") { closePicker(); handled = false; }
+  else handled = false;
+  if (!handled) return;
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+/* An open list closes on a press anywhere else, and when the page under it
+   moves. */
+function watchPickers() {
+  document.addEventListener("pointerdown", (e) => {
+    if (!pickers.open) return;
+    if (pickers.list.contains(e.target) || pickerButtons.get(pickers.open).contains(e.target)) return;
+    closePicker();
+  }, true);
+  document.addEventListener("scroll", (e) => {
+    if (pickers.open && e.target !== pickers.list) closePicker();
+  }, true);
+  window.addEventListener("resize", closePicker);
 }
 
 /* ---------------------------------------------------------------- wiring */
@@ -1786,19 +2015,16 @@ function bind() {
   $("gen-next").addEventListener("click", () => goTo((state.generation?.generation ?? 0) + 1));
   $("gen-last").addEventListener("click", () => goTo(state.bounds.last));
   $("btn-live").addEventListener("click", follow);
+  $("gen-range").addEventListener("input", (e) => fillRange(e.target));
   $("gen-range").addEventListener("change", (e) => goTo(Number(e.target.value)));
   $("gen-jump").addEventListener("keydown", (e) => {
     if (e.key === "Enter") { goTo(Number(e.target.value)); e.target.value = ""; }
   });
 
-  $("btn-play").addEventListener("click", () => {
-    state.playing = !state.playing;
-    $("btn-play").textContent = state.playing ? "⏸" : "▶";
-  });
+  $("btn-play").addEventListener("click", () => setPlaying(!state.playing));
   $("btn-restart").addEventListener("click", () => { state.frame = 0; paintFrame(); });
   $("frame-range").addEventListener("input", (e) => {
-    state.playing = false;
-    $("btn-play").textContent = "▶";
+    setPlaying(false);
     state.frame = Number(e.target.value);
     paintFrame();
   });
@@ -1849,7 +2075,8 @@ function bind() {
       return;
     }
     const tag = e.target.tagName;
-    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || e.target.closest("#drawer")) return;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    if (e.target.closest("#drawer, .picker")) return;
     if (e.key === "ArrowLeft") goTo((state.generation?.generation ?? 0) - 1);
     else if (e.key === "ArrowRight") goTo((state.generation?.generation ?? 0) + 1);
     else if (e.key === " ") { e.preventDefault(); $("btn-play").click(); }
@@ -1939,6 +2166,8 @@ function heartbeat() {
 function init() {
   state.wanted = new URLSearchParams(window.location.search).get("run");
   state.exportHint = $("export-report").innerHTML;
+  for (const select of document.querySelectorAll("select")) picker(select);
+  watchPickers();
   bind();
   setPick(state.exportPick);
   listen();

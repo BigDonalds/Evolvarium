@@ -1,25 +1,39 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>evolvarium</title>
+<title>Evolvarium</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232346e0'/%3E%3Cpath d='M14 25.4V18.51M14 18.51L9.77 13.46M14 18.51L18.24 13.46M18.24 13.46L14.04 6.2M18.24 13.46L22.43 6.2' fill='none' stroke='%23fff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cg fill='%23fff'%3E%3Ccircle cx='14' cy='25.4' r='2.4'/%3E%3Ccircle cx='9.77' cy='13.46' r='2.1'/%3E%3Ccircle cx='18.24' cy='13.46' r='2.1'/%3E%3Ccircle cx='14.04' cy='6.2' r='1.8'/%3E%3Ccircle cx='22.43' cy='6.2' r='1.8'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <header class="topbar">
   <div class="identity">
-    <div class="mark" aria-hidden="true"></div>
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+      <rect class="mark-tile" width="32" height="32" rx="8"/>
+      <path class="mark-line" d="M14 25.4V18.51M14 18.51L9.77 13.46M14 18.51L18.24 13.46M18.24 13.46L14.04 6.2M18.24 13.46L22.43 6.2"/>
+      <g class="mark-node">
+        <circle cx="14" cy="25.4" r="2.4"/>
+        <circle cx="9.77" cy="13.46" r="2.1"/>
+        <circle cx="18.24" cy="13.46" r="2.1"/>
+        <circle cx="14.04" cy="6.2" r="1.8"/>
+        <circle cx="22.43" cy="6.2" r="1.8"/>
+      </g>
+    </svg>
     <div>
-      <h1>evolvarium</h1>
+      <h1>Evolvarium</h1>
       <p class="run" id="run-id">connecting…</p>
     </div>
   </div>
 
   <div class="run-picker">
-    <select id="run-select" class="select" title="Run shown" aria-label="Run shown"></select>
-    <button class="btn primary" id="btn-new" hidden>New run</button>
+    <select id="run-select" class="select" data-picker="mono" title="Run shown" aria-label="Run shown"></select>
+    <button class="btn on-band" id="btn-new" hidden>
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13"/></svg>
+      New run
+    </button>
   </div>
 
   <div class="metrics" id="metrics">
@@ -47,8 +61,8 @@
     <div class="panel-head">
       <h2>Progress</h2>
       <div class="legend">
-        <span class="key best">best episode</span>
-        <span class="key mean">mean</span>
+        <span class="key best">Best episode</span>
+        <span class="key mean">Mean</span>
         <span class="tag" id="direction"></span>
       </div>
     </div>
@@ -56,7 +70,7 @@
       <svg id="chart" role="img" aria-label="Score by generation"></svg>
       <div class="chart-guide" id="chart-guide" hidden></div>
       <div class="chart-readout" id="chart-readout" hidden></div>
-      <div class="chart-empty">waiting for the first generation…</div>
+      <div class="chart-empty">Waiting for the first generation…</div>
     </div>
     <div class="minis">
       <div class="mini">
@@ -101,13 +115,21 @@
     <div class="panel-head">
       <h2>Population</h2>
       <div class="browser">
-        <button class="btn icon" id="gen-first" title="First generation">⏮</button>
-        <button class="btn icon" id="gen-prev" title="Previous generation">◀</button>
+        <button class="btn icon" id="gen-first" title="First generation" aria-label="First generation">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6v12"/><path d="M17 6.5 11.5 12l5.5 5.5"/></svg>
+        </button>
+        <button class="btn icon" id="gen-prev" title="Previous generation" aria-label="Previous generation">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5 9 12l5.5 5.5"/></svg>
+        </button>
         <label class="scrub">
           <input type="range" id="gen-range" min="0" max="0" value="0" aria-label="Generation">
         </label>
-        <button class="btn icon" id="gen-next" title="Next generation">▶</button>
-        <button class="btn icon" id="gen-last" title="Latest generation">⏭</button>
+        <button class="btn icon" id="gen-next" title="Next generation" aria-label="Next generation">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6.5 15 12l-5.5 5.5"/></svg>
+        </button>
+        <button class="btn icon" id="gen-last" title="Latest generation" aria-label="Latest generation">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M17.5 6v12"/><path d="M7 6.5l5.5 5.5L7 17.5"/></svg>
+        </button>
         <input type="number" id="gen-jump" class="jump" min="0" placeholder="gen" aria-label="Go to generation">
         <button class="btn" id="btn-live" aria-pressed="true">Follow latest</button>
       </div>
@@ -116,28 +138,35 @@
     <div class="gen-summary" id="gen-summary"></div>
 
     <div class="playback">
-      <button class="btn icon" id="btn-play" title="Play or pause">⏸</button>
-      <button class="btn icon" id="btn-restart" title="Restart replay">↺</button>
+      <button class="btn icon" id="btn-play" data-playing="true" title="Pause" aria-label="Pause">
+        <svg class="ico when-playing" viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M7.5 6h2.5v12H7.5zM14 6h2.5v12H14z"/></svg>
+        <svg class="ico when-paused" viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M8 5.8v12.4L18 12z"/></svg>
+      </button>
+      <button class="btn icon" id="btn-restart" title="Restart replay" aria-label="Restart replay">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 3.8v4.5H10"/><path d="M5.5 8.3a7.5 7.5 0 1 1-.74 5.64"/></svg>
+      </button>
       <input type="range" id="frame-range" min="0" max="0" value="0" aria-label="Frame">
       <span class="frame-label" id="frame-label">0 / 0</span>
-      <select id="speed" class="select" title="Replay speed">
-        <option value="4">0.25×</option>
-        <option value="2">0.5×</option>
-        <option value="1" selected>1×</option>
-        <option value="0.5">2×</option>
-        <option value="0.25">4×</option>
-      </select>
-      <select id="sort" class="select" title="Grid order">
-        <option value="fitness">by fitness</option>
-        <option value="score">by score</option>
-        <option value="steps">by steps</option>
-      </select>
-      <select id="limit" class="select" title="Agents shown">
-        <option value="24">24 agents</option>
-        <option value="60" selected>60 agents</option>
-        <option value="120">120 agents</option>
-        <option value="0">all</option>
-      </select>
+      <div class="playback-options">
+        <select id="speed" class="select" data-label="Speed" title="Replay speed">
+          <option value="4">0.25×</option>
+          <option value="2">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="0.5">2×</option>
+          <option value="0.25">4×</option>
+        </select>
+        <select id="sort" class="select" data-label="Sort by" title="Grid order">
+          <option value="fitness">fitness</option>
+          <option value="score">score</option>
+          <option value="steps">steps</option>
+        </select>
+        <select id="limit" class="select" data-label="Show" title="Agents shown">
+          <option value="24">24 agents</option>
+          <option value="60" selected>60 agents</option>
+          <option value="120">120 agents</option>
+          <option value="0">all agents</option>
+        </select>
+      </div>
     </div>
 
     <div class="grid" id="grid"></div>
@@ -236,7 +265,9 @@
 <div class="agent-sheet" id="agent-sheet" hidden>
   <div class="sheet-head">
     <h3 id="sheet-title">agent</h3>
-    <button class="btn icon" id="sheet-close" title="Close">✕</button>
+    <button class="btn icon" id="sheet-close" title="Close" aria-label="Close">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+    </button>
   </div>
   <div class="sheet-body" id="sheet-body"></div>
 </div>
@@ -244,12 +275,14 @@
 <aside class="drawer" id="drawer" hidden aria-labelledby="drawer-title">
   <div class="sheet-head">
     <h3 id="drawer-title">New run</h3>
-    <button class="btn icon" id="drawer-close" title="Close">✕</button>
+    <button class="btn icon" id="drawer-close" title="Close" aria-label="Close">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+    </button>
   </div>
   <form class="drawer-form" id="new-run" autocomplete="off" novalidate>
     <div class="drawer-scroll">
       <div class="form-row">
-        <label class="field"><span>Game</span><select id="new-game" class="select"></select></label>
+        <label class="field"><span>Game</span><select id="new-game" class="select" data-picker="mono" title="Game"></select></label>
         <label class="field" id="field-generations"><span>Generations</span>
           <input type="text" id="new-generations" inputmode="numeric" placeholder="until stopped"></label>
         <label class="field" id="field-seed"><span>Seed</span>
