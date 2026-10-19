@@ -290,7 +290,7 @@ def test_the_registry_finds_built_in_and_outside_games():
 
 
 @pytest.mark.parametrize(("name", "message"), [
-    ("tetris", "built in: snake"),
+    ("tetris", "built in: arena, snake"),
     ("no_such_module:Game", "cannot import"),
     ("test_contract:NotAGame", "not a Game subclass"),
     ("test_contract:Missing", "not a Game subclass"),

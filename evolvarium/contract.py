@@ -314,7 +314,7 @@ class Milestone:
 # How many numbers make one item of each shape.
 SHAPES = {"cell": 2, "dot": 2, "box": 4, "line": 4}
 # Roles rather than colours, so the dashboard's theme picks the colours.
-TONES = ("agent", "trail", "goal", "bonus", "hazard", "wall", "ink")
+TONES = ("agent", "trail", "goal", "bonus", "hazard", "wall", "ink", "alert")
 _SIZES = {"cell": 0.9, "dot": 0.5, "box": 0.0, "line": 0.1}
 
 

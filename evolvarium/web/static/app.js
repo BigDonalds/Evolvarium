@@ -889,7 +889,10 @@ function makePainter(scene) {
     };
   });
 
-  return (lists) => layers.map((paint, i) => paint(lists[i])).join("");
+  // The floor goes under every frame, so its edges show on a stage of another shape.
+  const floor = `<rect class="floor" width="${trim(width)}" height="${trim(height)}" ` +
+    `rx="${trim(Math.max(width, height) * 0.012)}"/>`;
+  return (lists) => floor + layers.map((paint, i) => paint(lists[i])).join("");
 }
 
 /* The labels of a decoded frame, as text kept to their digits. */

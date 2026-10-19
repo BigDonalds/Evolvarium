@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from test_contract import HERD, Herd, HerdSettings
 
-from evolvarium.contract import Label, Layer, Scene
+from evolvarium.contract import TONES, Label, Layer, Scene
 from evolvarium.evolution.evaluation import EvalContext, make_runner
 from evolvarium.games.snake.game import SnakeGame
 from evolvarium.games.snake.settings import (
@@ -172,6 +172,13 @@ def test_a_scene_describes_itself_as_plain_data():
     assert described["width"] == 10 and described["unit"] == 1
     assert [layer["shape"] for layer in described["layers"]] == ["cell", "cell", "box"]
     assert described["labels"][1] == {"name": "speed", "digits": 2}
+
+
+def test_the_dashboard_has_a_colour_for_every_tone():
+    style = (ROOT / "evolvarium" / "web" / "static" / "style.css").read_text(encoding="utf-8")
+    for tone in TONES:
+        assert f"--tone-{tone}:" in style
+        assert f".tone-{tone} {{ color: var(--tone-{tone}); }}" in style
 
 
 # ---------------------------------------------------------------- the engine

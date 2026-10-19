@@ -42,6 +42,143 @@ played as three bites of food and a catch.
 
 ---
 
+## The arena - a team with health against a scripted rival
+
+Snake gives the engine one agent an episode. The contract has allowed several
+since games moved behind it, but the only game that used them was the two-agent
+one in `tests/test_contract.py`, which is there to check the contract. The
+arena, in `evolvarium/games/arena`, is the first game with a team: three agents
+on one floor, every one playing the same network and sharing one score.
+
+**The match.** The floor is 15 by 15 with 10 pillars. Each agent starts with 6
+health, three pieces of food and two health packs lie on the floor, and the
+rival starts at least 6 cells from every agent. Each step plays out in a fixed
+order. Every standing agent moves, and one that steps onto the rival catches it
+for 10 points, after which the rival comes back at least 6 cells away. Food is
+worth a point and is replaced elsewhere at once. An agent short of health that
+steps on a pack heals 4, and the pack comes back 40 steps later. The rival then
+moves, or stands still one step in three, which is how an agent gains on it,
+and strikes the weakest agent next to it for 2. It runs from a healthy team but
+turns on a hurt agent, one at 2 health or less, within 5 cells. It always rests
+the step after a strike, so the agent it struck has one step to back away or to
+catch it. An agent with no health left falls where it stands and plays no
+further. A match ends when the whole team has fallen, after 400 steps, or after
+120 steps without a point, so a team that stands still cannot run out the
+clock. Like a game of Snake, a match follows from the seed and the team's moves
+alone.
+
+**What an agent sees.** 19 numbers: its health as a share of the most it can
+have, and whether it is hurt; the way to the nearest food, the nearest pack on
+the floor, the rival and the nearest standing teammate, each with its distance;
+whether the rival is one step away; and whether a wall or a pillar is next to it
+on each side. A fallen agent sees nothing near it, and its move is ignored.
+Pillars stand only where both coordinates are odd and away from the edge, so the
+open floor is always in one piece.
+
+**Settings.** Every number above is one of 19 settings in six sections: the
+floor, the team, the rival, the pickups, the points and the end of a match. The
+checks refuse a floor under 5 cells a side, more pillars than there are places
+for, a `team.hurt_at` at which every agent starts hurt, and a floor too small to
+hold the team, the rival and every pickup at once. With no packs,
+`pickups.heal` and `pickups.pack_delay` have no effect. With no damage, nothing
+that hunts, marks or heals a hurt agent does either, and `rival.reach`,
+`rival.sight` and `team.hurt_at` join them.
+
+**On the dashboard.** The scene has seven layers, drawn in order: pillars, food,
+packs, fallen agents where they fell, the rival, the team, and hurt agents in a
+colour of their own. It also has labels for the score, the catches and the
+agents still standing. Two things changed in the dashboard for it. Hurt agents
+were first drawn in the trail tone, a green too close to the team's to tell
+apart at a glance, so the contract has an eighth tone, `alert`, which the page
+draws in purple, and a test checks that the stylesheet has a colour for every
+tone. The replay sheet is wider than a square floor, and its background filled
+the whole width, so the floor's edges did not show. Every frame now starts with
+the floor drawn as its own rectangle, and the sheet has no background of its
+own. The export panel lists ten achievements: scores of 1, 10, 50, 100 and 200,
+a champion's team catching the rival, using a pack, averaging a catch a match,
+doing that without losing an agent, and over half the population scoring in one
+generation.
+
+**Hand-written teams.** `python -m evolvarium.games.arena.scripted` plays five
+teams on the 60 held-out seeds at the default settings. They read the same 19
+inputs a network reads and give one of the same five moves. The forager eats,
+and heads for a pack when hurt. The hunter chases the rival when it is within
+half the floor and eats otherwise. When hurt, it catches a rival next to it and
+otherwise heads for a pack, or away from the rival when no pack is on the floor.
+The reckless hunter chases whatever its health.
+
+| team | score | food | catches | healed | fallen | steps | ends |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| still | 0.00 | 0.0 | 0.00 | 0.00 | 0.00 | 120 | idle 60 |
+| wander | 2.85 | 2.9 | 0.00 | 0.00 | 0.00 | 230 | idle 51, timeout 9 |
+| forager | 80.98 | 79.0 | 0.20 | 0.32 | 0.00 | 400 | timeout 60 |
+| hunter | 188.88 | 21.9 | 16.70 | 8.23 | 0.18 | 400 | timeout 60 |
+| reckless | 102.37 | 11.0 | 9.13 | 1.28 | 2.98 | 230 | fallen 59, timeout 1 |
+
+Every column but the ends is a mean over the 60 matches, and fallen counts
+agents. Chasing scores more than eating, but the same chase without backing off
+loses the whole team in 59 matches of 60 and scores 102 to the hunter's 189.
+
+**The target, set before any training.** Five runs train at the default
+settings for 300 generations each, with seeds 1 to 5. Each run's champion then
+plays the 60 held-out seeds with `evaluate`. A run passes if its mean score is
+120 or more and the whole team falls in no more than 6 of the 60 matches. The
+arena counts as learnt if at least three of the five runs pass. 120 is more than
+eating alone scores (81) or chasing without backing off (102), and well under
+the hunter's 189. The limit on falls is there because the reckless hunter shows
+a team can score by chasing and still lose everyone, so a team that passes has
+to back off when it is hurt as well as catch the rival.
+
+**Against the target.** No run passed, so by the target the arena is not learnt.
+
+| seed | best game | held-out mean | team fell | ends |
+| ---: | ---: | ---: | ---: | --- |
+| 1 | 209 | 119.2 | 0 | timeout 42, idle 18 |
+| 2 | 216 | 77.1 | 7 | idle 42, timeout 11, fallen 7 |
+| 3 | 208 | 124.4 | 31 | fallen 31, timeout 20, idle 9 |
+| 4 | 207 | 127.6 | 36 | fallen 36, timeout 18, idle 6 |
+| 5 | 168 | 88.2 | 0 | timeout 46, idle 14 |
+
+Best game is the champion's best training game, and the other columns are over
+the 60 held-out matches. The five champions average 107.3, with a 95% interval
+of 78.7 to 135.9. The runs fail in two ways. Seeds 3 and 4 score enough but lose
+the whole team in about half their matches, as the reckless hunter does. Seeds
+1, 2 and 5 score too little, and many of their matches end idle, 120 steps
+without a point. Fitness is the score alone, so a fall costs only the points
+the team would have scored afterwards. A team that catches the rival quickly
+and then falls can still outscore one that backs off, and nothing in training
+rewards backing off. Each run took 6.5 to 9.5 minutes on seven workers.
+
+The stored champion holds its title for one best game, which is the wrong thing
+to choose on. In Snake it once crowned a genome scoring 44.1 held-out while the
+same population held one scoring 81.5. Choosing each run's genome by its average
+instead, as `export --pick best-average` does on seeds from 800000, and scoring
+that genome on the same held-out seeds gives 124.1, 130.0, 128.8, 135.5 and
+95.9, with the whole team falling in 1, 22, 23, 31 and 0 matches. That lifts
+every run, by 4 to 53 points, and seed 1 would pass, but the runs that lose
+their team keep losing it. This is not the target set before training and does
+not change the result above.
+
+**Speed.** On Windows 11 on ARM64 with the ARM64 build of Python 3.14.2 and NumPy
+2.5.4, one process plays 64,000 agent moves a second, 15.5 µs a move. Building
+the inputs takes 5.4 µs of that, almost all of it in the engine's `observe`, the
+network 6.5 µs and the rules 3.2 µs. A match that runs its full 400 steps is
+1,200 agent moves.
+
+**Checking it.** `tests/test_arena.py` has 39 tests. They cover the same seed
+giving the same match, the floor staying in one piece with every possible
+pillar, each rule above on a floor laid out by hand, each way a match ends,
+what an agent sees, the scene following the match through a whole game and
+through a replay, every setting that is refused or without effect, the
+achievements, a population playing whole teams, workers and one process scoring
+alike, an exported model playing as it trained, and the hunter beating the
+other hand-written teams. In the browser a run started from New run trained the
+arena for two generations, its replays drew every layer and label, and the
+export panel listed the ten achievements. Untrained teams mostly stand still and
+the rival runs from healthy agents, so a second two-generation run used a 9 by
+9 floor, eight agents and a rival striking for 4. Its replays showed hurt agents
+in purple beside the green team, and the replay sheet showed the floor's edges.
+
 ## Runs on the page - start, stop, compare and choose for any game
 
 The dashboard came with `train` and showed the one run that process trained. It

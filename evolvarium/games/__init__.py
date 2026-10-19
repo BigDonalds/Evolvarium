@@ -18,6 +18,7 @@ from ..config import SECTIONS, Config
 from ..contract import DIRECTIONS, Game, closest
 
 _BUILT_IN = {
+    "arena": "evolvarium.games.arena:ArenaGame",
     "snake": "evolvarium.games.snake:SnakeGame",
 }
 

@@ -87,9 +87,15 @@ a seed, takes an action for every agent each step, and says how each episode
 ended and whether a higher or a lower score is better. The engine sizes the
 network from that and turns its outputs back into the game's own actions.
 
-Snake, in `evolvarium/games/snake`, is the one built in. Any other game is named
-`module:Class` and imported from wherever Python finds it, so
-`train --game package.module:Class` trains it and
+Two games are built in and go by their short names, as in `train --game arena`.
+Snake is in `evolvarium/games/snake`. The arena, in `evolvarium/games/arena`,
+puts a team of agents with health on one floor to eat, heal and chase a scripted
+rival that turns on them when they are hurt, and every agent plays the same
+network. `python -m evolvarium.games.arena.scripted` plays hand-written teams on
+the held-out seeds, the figures a trained team is measured against.
+
+Any other game is named `module:Class` and imported from wherever Python finds
+it, so `train --game package.module:Class` trains it and
 `settings --game package.module:Class` lists its settings. A game can declare
 the values a setting allows, check its settings against each other, and name
 the ones that others leave without effect, and the run uses all three before it

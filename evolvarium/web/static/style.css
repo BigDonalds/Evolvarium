@@ -71,6 +71,7 @@
   --tone-hazard: #f2700c;
   --tone-wall: #8391aa;
   --tone-ink: var(--text-dim);
+  --tone-alert: #8e3bd9;
 
   /* Runs set side by side take these in turn. */
   --c0: #2346e0;
@@ -648,6 +649,7 @@ input[type="range"]:focus-visible::-moz-range-thumb { box-shadow: var(--ring); }
 
 .stage rect, .stage circle { fill: currentColor; }
 .stage line { stroke: currentColor; stroke-linecap: round; }
+.stage rect.floor { fill: var(--stage); }
 .tone-agent { color: var(--tone-agent); }
 .tone-trail { color: var(--tone-trail); }
 .tone-goal { color: var(--tone-goal); }
@@ -655,6 +657,7 @@ input[type="range"]:focus-visible::-moz-range-thumb { box-shadow: var(--ring); }
 .tone-hazard { color: var(--tone-hazard); }
 .tone-wall { color: var(--tone-wall); }
 .tone-ink { color: var(--tone-ink); }
+.tone-alert { color: var(--tone-alert); }
 
 .empty { padding: 30px 0; color: var(--text-faint); font-size: 13px; text-align: center; }
 .grid:not(:empty) + .empty { display: none; }
@@ -823,7 +826,8 @@ input[type="range"]:focus-visible::-moz-range-thumb { box-shadow: var(--ring); }
 .sheet-head .btn.icon { border-color: transparent; color: var(--text-dim); box-shadow: none; }
 .sheet-head .btn.icon:hover { background: var(--surface-3); border-color: transparent; color: var(--text); }
 .sheet-body { padding: 14px 16px 16px; }
-.sheet-stage { max-height: 42vh; margin-bottom: 12px; }
+/* The sheet is usually wider than the scene, so only the floor is filled in. */
+.sheet-stage { max-height: 42vh; margin-bottom: 12px; background: none; }
 
 .readout { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 14px; }
 .read { display: flex; flex-direction: column; gap: 1px; }
