@@ -35,6 +35,7 @@ def test_reset_scores_clears_every_evaluation_field():
     individual.fitness = 900.0
     individual.score = 7.0
     individual.best_episode_score = 7
+    individual.best_episode_steps = 410
     individual.steps = 300.0
     individual.end = "wall"
     individual.terms = {"food": 900.0}
@@ -45,6 +46,7 @@ def test_reset_scores_clears_every_evaluation_field():
     assert individual.fitness == 0.0
     assert individual.score == 0.0
     assert individual.best_episode_score == 0
+    assert individual.best_episode_steps == 0
     assert individual.steps == 0.0
     assert individual.end is None
     assert individual.terms == {}

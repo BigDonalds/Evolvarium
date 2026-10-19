@@ -133,6 +133,7 @@ class Population:
         individual.fitness = outcome.fitness
         individual.score = outcome.score
         individual.best_episode_score = outcome.best_episode_score
+        individual.best_episode_steps = outcome.best_episode_steps
         individual.steps = outcome.steps
         individual.terms = outcome.terms
         individual.signals = outcome.signals

@@ -57,6 +57,9 @@ class EvalResult:
     fitness: float
     score: float
     best_episode_score: float
+    # Steps of the best episode, the one whose replay is kept. `steps` is the
+    # mean over every episode.
+    best_episode_steps: int
     steps: float
     terms: dict[str, float]
     signals: dict[str, float]
@@ -122,12 +125,9 @@ class _Runner:
         )
 
     def score(self, genome: np.ndarray, base_seed: int, trials: int, record: bool) -> EvalResult:
-        outcomes = [
-            # Every genome in a generation meets the same seed sequence, so
-            # differences between them reflect policy rather than luck.
-            self.play(genome, base_seed + trial, record and trial == 0)
-            for trial in range(trials)
-        ]
+        # Every genome in a generation meets the same seed sequence, so
+        # differences between them reflect policy rather than luck.
+        outcomes = [self.play(genome, base_seed + trial, record) for trial in range(trials)]
         terms: dict[str, float] = {}
         signals: dict[str, float] = {}
         for outcome in outcomes:
@@ -143,17 +143,21 @@ class _Runner:
         else:
             best = min(scores)
             worst = max(outcomes, key=lambda o: o.score)
+        # The replay kept is the best episode's, the one whose score is shown
+        # with it. Of episodes that tie, the earliest.
+        shown = next(o for o in outcomes if o.score == best)
 
         return EvalResult(
             fitness=float(np.mean([o.fitness for o in outcomes])),
             score=float(np.mean(scores)),
             best_episode_score=best,
+            best_episode_steps=shown.steps,
             steps=float(np.mean([o.steps for o in outcomes])),
             terms={k: v / trials for k, v in terms.items()},
             signals={k: v / trials for k, v in signals.items()},
             end=worst.end,
             episodes=trials,
-            replay=outcomes[0].replay,
+            replay=shown.replay,
         )
 
 

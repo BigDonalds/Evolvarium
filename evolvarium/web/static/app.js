@@ -1006,12 +1006,15 @@ function renderGrid() {
     svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
     card.appendChild(svg);
 
+    // The caption describes the episode the tile replays. Runs archived before
+    // its steps were kept have only the mean over every episode.
+    const steps = agent.best_episode_steps ?? agent.steps;
     const cap = document.createElement("div");
     cap.className = "cap";
     cap.innerHTML =
       `<span class="rk">#${rank + 1}</span>` +
       `<span class="sc">${fmt.num(agent.best_episode_score)}</span>` +
-      `<span>${Math.round(agent.steps)}s</span>`;
+      `<span>${Math.round(steps)}s</span>`;
     card.appendChild(cap);
 
     card.addEventListener("click", () => showAgent(agent));

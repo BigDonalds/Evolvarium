@@ -10,6 +10,38 @@ directly.
 
 ---
 
+## Replays - the best episode, not the first
+
+Every agent plays `evolution.evaluation_episodes` episodes a generation, four by
+default, and the dashboard puts the best one's score on the agent's tile and in
+its sheet. The replay beside that score was the first episode's, as it had been
+since the baseline. With one snake the two were easy to take for each other. In
+the arena a tile could read 10 over a replay in which nobody scored, because the
+catch worth 10 came in another match. In a two-generation arena run, 24 of the
+60 replays ended on a score other than their tile's.
+
+Every episode of a recorded generation is now recorded, and the replay kept is
+the best episode's, the earliest of any that tie. A game that counts lower as
+better keeps its lowest. The step count on the tile was the mean over all four
+episodes, and is now the replayed episode's own, kept with each member as
+`best_episode_steps`. Runs archived before it show the mean as they did. The
+agent sheet still gives the mean steps and the worst episode's end, which are
+about all four.
+
+**Speed.** Drawing and packing cost about 7 µs a step in either game, 17% of an
+arena step and 4% of a Snake step. Recording all four episodes rather than the
+first made scoring 60 random arena genomes 12% slower, and four games of the
+81.5 model 5% slower.
+
+**Checking it.** `tests/test_replays.py` plays the 81.5 model on three seeds
+where it scores 56, 100 and 100, and checks that the replay kept is the second
+game's, frame for frame, and not the third's, with that game's 3,623 steps.
+Herd, which counts lower as better, keeps its third and lowest. In a two-generation arena run started from
+the page, all 60 replays ended on their tile's score, and the best tile's 13
+played as three bites of food and a catch.
+
+---
+
 ## Runs on the page - start, stop, compare and choose for any game
 
 The dashboard came with `train` and showed the one run that process trained. It

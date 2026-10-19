@@ -236,6 +236,34 @@ def test_a_replay_is_marked_truncated_only_when_it_was_cut():
     assert whole.replay["frames"] == outcome.steps + 2 and whole.replay["truncated"] is False
 
 
+def test_the_replay_kept_is_the_best_episode():
+    runner, genome, _ = golden_runner()
+    # Snake scores 56, 100 and 100 on these seeds, so the best is not the first
+    # and two tie for it. The earlier of the two is kept.
+    result = runner.score(genome, 900003, 3, True)
+    best = runner.play(genome, 900004, True)
+    assert result.best_episode_score == best.score == 100
+    assert result.replay == best.replay
+    assert result.replay != runner.play(genome, 900005, True).replay
+    # The steps shown with the replay are that episode's own, not the mean.
+    assert result.best_episode_steps == best.steps == 3623
+    assert result.steps != best.steps
+
+    # Herd counts lower as better, and does best on the last of these seeds.
+    game = Herd(HerdSettings())
+    architecture = Architecture(game.observation.size, (6,), ("tanh",), game.actions.size)
+    ctx = EvalContext(game=HERD, settings=HerdSettings(), architecture=architecture.to_dict(),
+                      exploration_rate=0.0, replay_steps=0)
+    genome = np.random.default_rng(5).normal(size=architecture.genome_size).astype(np.float32)
+    runner = make_runner(ctx)
+    result = runner.score(genome, 10, 3, True)
+    scores = [runner.play(genome, seed, False).score for seed in (10, 11, 12)]
+    assert result.best_episode_score == min(scores) == scores[2]
+    assert result.replay == runner.play(genome, 12, True).replay
+    assert result.best_episode_steps == runner.play(genome, 12, False).steps
+    assert runner.score(genome, 10, 3, False).replay is None
+
+
 def test_a_game_in_continuous_space_records_its_positions():
     game = Herd(HerdSettings())
     architecture = Architecture(game.observation.size, (6,), ("tanh",), game.actions.size)

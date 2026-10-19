@@ -51,6 +51,7 @@ class Individual:
     fitness: float = 0.0
     score: float = 0.0
     best_episode_score: float = 0
+    best_episode_steps: int = 0
     steps: float = 0.0
     # How the member's worst episode ended, in the game's own words.
     end: str | None = None
@@ -58,7 +59,7 @@ class Individual:
     signals: dict[str, float] = field(default_factory=dict)
     species_id: int = 0
     evaluated: bool = False
-    # Packed replay of this individual's first evaluation episode, when one was
+    # Packed replay of this individual's best evaluation episode, when one was
     # recorded. Produced in whichever process scored the genome.
     replay: dict | None = None
 
@@ -67,6 +68,7 @@ class Individual:
         self.fitness = 0.0
         self.score = 0.0
         self.best_episode_score = 0
+        self.best_episode_steps = 0
         self.steps = 0.0
         self.end = None
         self.terms = {}
@@ -94,6 +96,7 @@ class Individual:
             "fitness": round(self.fitness, 2),
             "score": round(self.score, 3),
             "best_episode_score": self.best_episode_score,
+            "best_episode_steps": self.best_episode_steps,
             "steps": round(self.steps, 1),
             "end": self.end,
             "terms": {k: round(v, 2) for k, v in self.terms.items()},
