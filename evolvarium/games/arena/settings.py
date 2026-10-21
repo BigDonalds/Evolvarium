@@ -1,4 +1,4 @@
-"""The arena's settings: the floor, the team, the rival, the pickups, the points and the end."""
+"""The arena's settings: the floor, team, rival, pickups, points, end of a match and fitness."""
 
 from __future__ import annotations
 
@@ -78,6 +78,21 @@ class MatchConfig:
 
 
 @dataclass(frozen=True)
+class FitnessConfig:
+    """How a match's score becomes the fitness that selection reads.
+
+    The score counts points and nothing else, so on the score alone a fall costs
+    a team only the points it would have scored afterwards.
+    """
+
+    # The share of its score a match loses if the whole team falls, each fallen
+    # agent costing its own part of it. Charged against the score rather than
+    # as a flat cost, so a team that scores and then falls still comes out
+    # ahead of one that never scores.
+    fall_fraction: float = 0.5
+
+
+@dataclass(frozen=True)
 class ArenaSettings:
     floor: FloorConfig = field(default_factory=FloorConfig)
     team: TeamConfig = field(default_factory=TeamConfig)
@@ -85,3 +100,4 @@ class ArenaSettings:
     pickups: PickupConfig = field(default_factory=PickupConfig)
     points: PointsConfig = field(default_factory=PointsConfig)
     match: MatchConfig = field(default_factory=MatchConfig)
+    fitness: FitnessConfig = field(default_factory=FitnessConfig)

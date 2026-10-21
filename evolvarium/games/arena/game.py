@@ -79,12 +79,19 @@ class ArenaGame(Game):
     # -------------------------------------------------------------- results
 
     def goal(self) -> tuple[float, dict[str, float]]:
-        match, points = self.match, self.settings.points
+        """The score, less a share of it for every agent that fell.
+
+        The terms add up to the fitness.
+        """
+        match, settings = self.match, self.settings
+        points = settings.points
+        fallen = (len(match.team) - match.standing) / len(match.team)
         terms = {
             "food": float(match.eaten * points.food),
             "catches": float(match.catches * points.catch),
+            "falls": 0.0 - settings.fitness.fall_fraction * fallen * match.score,
         }
-        return float(match.score), terms
+        return sum(terms.values()), terms
 
     def signals(self) -> dict[str, float]:
         match = self.match
@@ -156,6 +163,7 @@ class ArenaGame(Game):
         problems.at_least("points.catch", points.catch, 0)
         problems.at_least("match.max_steps", match.max_steps, 1)
         problems.at_least("match.idle_limit", match.idle_limit, 1)
+        problems.between("fitness.fall_fraction", settings.fitness.fall_fraction, 0, 1)
         if not problems:
             # Pickups go only where nothing else is, so the open floor has to
             # hold the team, the rival and every pickup at once.
@@ -176,11 +184,12 @@ class ArenaGame(Game):
             unused["pickups.pack_delay"] = "pickups.packs is 0"
         if settings.pickups.food == 0:
             unused["points.food"] = "pickups.food is 0"
-        # Without damage no agent is ever hurt, so nothing that hunts, marks or
-        # heals a hurt agent comes into play. The packs still lie on the floor.
+        # Without damage no agent is ever hurt or falls, so nothing that hunts,
+        # marks or heals a hurt agent comes into play, and no fall is charged.
+        # The packs still lie on the floor.
         if settings.rival.damage == 0:
             for name in ("rival.reach", "rival.sight", "team.hurt_at",
-                         "pickups.heal", "pickups.pack_delay"):
+                         "pickups.heal", "pickups.pack_delay", "fitness.fall_fraction"):
                 unused[name] = "rival.damage is 0, so no agent loses health"
         return unused
 

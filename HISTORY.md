@@ -10,6 +10,127 @@ directly.
 
 ---
 
+## The arena again - a cost for falling, and what crossover is worth
+
+The first attempt at the arena's target failed two ways. Seeds 3 and 4 lost the
+whole team in about half their matches, and seeds 1, 2 and 5 scored too little.
+Before trying again it seemed worth finding out why, without spending the
+target's seeds on guesses. So everything here trained on seeds 11 and 12, every
+genome was scored on seeds 700000 to 700059, and each run's best-average pick was
+chosen on seeds from 800000, the same way `export --pick best-average` chooses.
+Seeds 1 to 5 and the held-out block were left alone. The figures compare with
+each other, but not with the first attempt's table further down.
+
+**Charging for falls.** Fitness was the score, so a fall only cost the points the
+team would have scored afterwards. The arena now has a twentieth setting in a
+section of its own, `fitness.fall_fraction`, 0.5 by default. A match loses that
+share of its score if the whole team falls, and each agent that falls costs a
+third of it. A team that scores 90 keeps 75 if it loses one agent and 45 if it
+loses all three. Taking the cost out of the score rather than charging a flat
+amount means a team that scores and then falls still beats one that never
+scores at all. The score itself is unchanged, so the scripted teams' figures
+still stand, and the fitness breakdown has a third term, `falls`, beside food
+and catches. With `rival.damage` at 0 nobody can fall, so the setting is refused
+there as having no effect.
+
+Each fall cost trained on both seeds for 300 generations:
+
+| fall cost | stored champion | best-average pick | team fell, pick |
+| ---: | --- | --- | --- |
+| 0 | 95.3, 112.5 | 99.0, 122.4 | 2, 37 |
+| 0.5 | 68.3, 82.9 | 98.7, 107.0 | 0, 0 |
+| 1.0 | 62.7, 80.5 | 95.5, 95.4 | 0, 0 |
+
+Each cell gives seed 11, then seed 12. The scores are means over the 60 dev
+matches, and team fell counts the matches in which all three agents went down.
+Without the cost, seed 12's pick lost the team in 37 matches, the same thing
+seeds 3 and 4 did the first time. At 0.5 neither seed lost it once. Going up to
+1.0 did nothing more for falls and cost a few more points, so 0.5 is the
+default.
+
+**Where the rest of the points go.** The cost fixed the falls but not the low
+scores. The seed 11 champion at 0.5 ended 23 of its 60 matches idle, 120 steps
+without a point. Nobody was hurt in any of them, so the team wasn't keeping away
+from the rival. It was stuck. Over those last 120 steps more than half the
+agents stayed on three cells or fewer, either stepping up and down between two
+cells or walking into a pillar or a wall again and again. That's a navigation
+problem rather than a fitness one, and nothing tried here got rid of it: every
+best-average pick still ended between 4 and 28 of its matches idle.
+
+**The stored champion.** It's crowned on its best single game, which was already
+known to be the wrong thing to choose on. Here the best-average pick scored
+higher in 14 of the 16 arena runs, by 4 to 43 points. The two exceptions were
+the runs without crossover below, where it came out 2 and 6 points lower.
+
+**The GA.** Two things in the run logs looked off. The mutation rate rises by
+`evolution.stagnation_step` every generation the best score fails to move, and
+only drops back on a record. Records are single games and get rare, so across
+the six runs above the rate sat at its 0.35 cap for 107 to 203 of the 300
+generations. The other was crossover. The config keeps it to a quarter of the
+children, because blending two networks whose units don't line up keeps less of
+the parents than mutation does. Yet a crossover child was the generation's best
+in 101 to 126 generations of 300, between 34% and 42% of them.
+
+So each seed got five more runs at fall cost 0.5, each changing one setting:
+
+| change | stored champion | best-average pick | average pick | team fell, pick |
+| --- | --- | --- | ---: | --- |
+| none | 68.3, 82.9 | 98.7, 107.0 | 102.8 | 0, 0 |
+| mutation rate held at 0.12 | 83.3, 91.4 | 94.0, 101.3 | 97.6 | 0, 0 |
+| 8 games a genome, not 4 | 91.5, 95.8 | 100.4, 109.7 | 105.0 | 0, 0 |
+| no crossover | 67.2, 67.7 | 61.4, 65.7 | 63.5 | 0, 0 |
+| crossover 0.5 | 84.2, 96.5 | 109.9, 118.0 | 114.0 | 0, 1 |
+| crossover 0.75 | 99.4, 84.8 | 132.0, 127.4 | 129.7 | 10, 14 |
+
+Holding the mutation rate still helped the champions but not the picks, so the
+cap isn't what's holding the arena back. Eight games a genome bought about 2
+points for twice the games. Crossover was the one that mattered, and it
+mattered a lot. Taking it out cost the picks about 40 points, 0.5 added 11, and
+0.75 another 16. The catch is that at 0.75 the team started falling again, in
+10 and 14 matches, more than the 6 the target allows.
+
+**Snake.** Crossover is an engine setting, not an arena one, so a change to it
+has to hold up on Snake too. Three runs on seed 11 for 150 generations, scored
+on the same dev seeds:
+
+| crossover | stored champion | best-average pick | starved, pick |
+| ---: | ---: | ---: | ---: |
+| 0.25 | 61.7 | 69.5 | 2 |
+| 0.5 | 59.9 | 72.6 | 3 |
+| 0.75 | 70.5 | 70.5 | 12 |
+
+Snake hardly cares. The picks are within about 3 points of each other, which one
+seed can't separate, and at 0.75 the pick was the stored champion itself and
+starved in 12 of its 60 games. These are short runs on one seed, so they don't
+compare with the 81.5 model.
+
+**What stays.** The fall cost stays at 0.5. Crossover stays at 0.25 for now.
+0.5 looks better for the arena and does Snake no harm, but that rests on one
+Snake seed, which isn't enough to move a default every game uses. It comes up
+again when crossover itself is reworked, and the idle matches come up again with
+the changes planned for the network, since neither looks like something a
+setting will fix. The arena is still not learnt. The next attempt at its target
+will be written here before it runs, and will score each run's best-average pick
+instead of its stored champion.
+
+**How long it took.** About 9.5 hours of training in all. The 16 arena runs took
+3.6 hours between them, anywhere from 7 to 26 minutes each: 7 to 12 minutes
+plugged in, up to 26 on battery, and about 20 with eight games a genome. The
+three Snake runs took 5.8 hours, 93 to 150 minutes each, the slowest partly on
+battery. Scoring every run and choosing its pick added under a quarter of an
+hour. With the laptop asleep overnight and again for an afternoon, the whole
+thing stretched from the evening of 19 October to late morning on 21 October.
+Two runs were cut short and resumed from a checkpoint, and both picked up
+exactly where they'd stopped.
+
+**Checking it.** `tests/test_arena.py` has 44 tests now. The new ones check that
+each fallen agent costs its part of the fall fraction, that a team that all
+falls keeps the rest of its score, that a team that loses nobody keeps all of
+it, and that a fall fraction above 1, or any fall fraction with no damage, is
+refused.
+
+---
+
 ## Replays - the best episode, not the first
 
 Every agent plays `evolution.evaluation_episodes` episodes a generation, four by

@@ -314,6 +314,38 @@ def test_an_arena_replay_draws_the_match_it_recorded():
         assert len(frame["team"] + frame["hurt"] + frame["fallen"]) == ARENA.team.size
 
 
+# ----------------------------------------------------------------- fitness
+
+
+def test_each_fallen_agent_costs_its_part_of_the_fall_fraction():
+    game = ArenaGame(open_floor(fitness__fall_fraction=0.6))
+    game.match = place(Match(game.settings, 3), [(5, 5), (9, 9), (2, 2)], rival=(14, 0),
+                       food=[(9, 8), (0, 14), (14, 14)], health=[0, 6, 6])
+    game.match.step(["stay", "up", "stay"])
+    fitness, terms = game.goal()
+    assert terms == pytest.approx({"food": 1.0, "catches": 0.0, "falls": -0.2})
+    assert fitness == pytest.approx(0.8)
+
+
+def test_a_team_that_all_falls_keeps_the_rest_of_its_score():
+    game = ArenaGame(arena(fitness__fall_fraction=0.6))
+    game.match = scripted.play(game.settings, scripted.reckless, 3)
+    assert game.end == "fallen" and game.score > 0
+    fitness, terms = game.goal()
+    assert terms["food"] + terms["catches"] == game.score
+    assert fitness == pytest.approx(0.4 * game.score)
+
+
+def test_a_team_that_loses_no_one_keeps_its_whole_score():
+    game = ArenaGame()
+    game.match = scripted.play(ARENA, scripted.hunter, 3)
+    assert game.match.standing == ARENA.team.size and game.score > 0
+    fitness, terms = game.goal()
+    assert fitness == game.score
+    # Positive zero, so a breakdown never shows a fall that cost nothing as -0.
+    assert str(terms["falls"]) == "0.0"
+
+
 # ----------------------------------------------------------------- settings
 
 
@@ -329,6 +361,8 @@ def test_the_defaults_pass_every_check():
     ((("team.hurt_at", "6"),), "team.hurt_at must be between 0 and 5, not 6"),
     ((("rival.sight", "-1"),), "rival.sight must be at least 0, not -1"),
     ((("match.idle_limit", "0"),), "match.idle_limit must be at least 1, not 0"),
+    ((("fitness.fall_fraction", "1.5"),),
+     "fitness.fall_fraction must be between 0 and 1, not 1.5"),
     ((("floor.width", "5"), ("floor.height", "5"), ("floor.pillars", "0"), ("team.size", "20")),
      "team.size, pickups.food and pickups.packs need 26 open cells with the rival, "
      "and the floor has 25"),
@@ -343,6 +377,8 @@ def test_arena_values_that_cannot_train_are_refused(assignments, problem):
     ((("pickups.food", "0"), ("points.food", "2")), "pickups.food is 0"),
     ((("rival.damage", "0"), ("rival.reach", "2")), "rival.damage is 0, so no agent loses health"),
     ((("rival.damage", "0"), ("team.hurt_at", "1")),
+     "rival.damage is 0, so no agent loses health"),
+    ((("rival.damage", "0"), ("fitness.fall_fraction", "0.2")),
      "rival.damage is 0, so no agent loses health"),
 ])
 def test_an_arena_setting_with_no_effect_is_refused(assignments, reason):
