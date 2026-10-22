@@ -134,6 +134,69 @@ the engine. It doesn't say cart-pole needs evolution, when one line of
 arithmetic and a few random networks in every population already balance the
 pole. The harder tests of learning are the games still to come.
 
+**Against the target.** All five runs passed, so by the target cart-pole is
+learnt. That comes with a big catch, which is just below the table.
+
+| seed | training | held-out mean | full length | drift | lean | effort |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 2:16 | 500.0 | 60 of 60 | 0.004 | 0.010 | 0.008 |
+| 2 | 1:58 | 500.0 | 60 of 60 | 0.009 | 0.022 | 0.012 |
+| 3 | 2:03 | 500.0 | 60 of 60 | 0.024 | 0.128 | 0.043 |
+| 4 | 2:31 | 500.0 | 60 of 60 | 0.061 | 0.009 | 0.011 |
+| 5 | 2:35 | 500.0 | 60 of 60 | 0.028 | 0.009 | 0.004 |
+
+Drift, lean and effort are means over the 60 held-out episodes, as in the
+controller table. Every pick keeps the cart nearer the middle than upright's
+0.199, and seed 1's even beats steady's 0.006. Seed 3's lets the pole lean much
+further than the rest, about an eighth of the way to falling, but never far
+enough to drop it.
+
+The catch is that none of these five genomes was trained. In every run some
+genome kept the pole up for all 500 steps in all four of its games in
+generation 0. A game can't score more than 500, so that record never moved, and
+the stored champion stayed the generation-0 genome that set it. The
+best-average pick didn't change that, because the stored champion and every
+finalist averaged 500 over their 48 selection games, and on a tie the stored
+champion wins. Each exported genome is exactly one of the 150 random networks
+its run started with. So the pass shows what the target said it would, that a
+game with a continuous action trains, exports and scores with no change to the
+engine, and nothing about whether evolution helped.
+
+The training shows in the population instead. Each run's first and last
+populations played the 60 dev seeds:
+
+| seed | full every time, generation 0 | full every time, generation 100 | mean, generation 0 | mean, generation 100 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 6 of 150 | 126 of 150 | 82.5 | 451.7 |
+| 2 | 8 of 150 | 133 of 150 | 87.2 | 463.6 |
+| 3 | 2 of 150 | 138 of 150 | 59.5 | 484.6 |
+| 4 | 5 of 150 | 128 of 150 | 78.8 | 458.0 |
+| 5 | 6 of 150 | 134 of 150 | 72.6 | 462.3 |
+
+Full every time counts the genomes that kept the pole up for all 500 steps in
+every one of the 60 episodes. About 4% of each starting population could do it,
+and after 100 generations 84% to 92% could. That's evolution doing its job, but
+nothing written down before the runs asked for it, so it only counts as a dev
+figure.
+
+The runs also turned up two things about the engine. The mutation rate goes up
+by `evolution.stagnation_step` every generation without a record, and here no
+record could come after generation 0, so the rate hit its 0.35 cap in
+generation 12 of every run and stayed there. The 8% to 16% of each last population
+that still dropped the pole are probably children mutated that hard, along with
+the four random immigrants every generation brings in. The
+other thing is that once every finalist scores the most a game allows, the pick
+falls back to the stored champion, which in a game with a ceiling is whichever
+genome got there first. Both are engine questions, and like crossover they stay
+as they are until a change can be checked on more than one game.
+
+**How long it took.** The five runs took 11.5 minutes between them, 2 to 2.5
+minutes each on seven workers, with the laptop on battery the whole time.
+Exporting all five took 11 seconds and scoring them on the held-out seeds 5
+more. Checking the populations on the dev seeds took about 45 seconds. From the
+first run starting to the last check was about a quarter of an hour, on the
+morning of 22 October.
+
 **Speed.** In one process, on battery, the rules and the inputs take 1.2 µs a
 step, and with a network choosing the push it's 7.6 µs, about 132,000 steps a
 second. A full episode is 500 steps.
