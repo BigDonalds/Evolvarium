@@ -7,6 +7,7 @@ import gzip
 import http.client
 import itertools
 import json
+import math
 import os
 import time
 import types
@@ -16,6 +17,7 @@ import pytest
 
 from evolvarium import held_out
 from evolvarium.config import CONFIG
+from evolvarium.events import GenerationEvaluated
 from evolvarium.games.snake.game import SnakeGame
 from evolvarium.games.snake.settings import BoardConfig, EpisodeConfig, SnakeSettings
 from evolvarium.persistence import export_model, model_file
@@ -357,6 +359,23 @@ def test_a_saved_run_answers_with_the_fields_of_a_live_one(served):
         assert set(live.status()) == set(saved.status())
         assert set(live.entry()) == set(saved.entry())
         assert set(live.comparison()) == set(saved.comparison())
+    finally:
+        served.lab.retire(live)
+
+
+def test_a_live_run_offers_its_newest_genomes_first(served):
+    trainer = Trainer(served.config, run_id="aged", seed=2, max_generations=2)
+    live = served.lab.adopt(trainer)
+    played = []
+    trainer.events.subscribe(lambda event: played.append(
+        {m.genome.astype(np.float32).tobytes(): m.age for m in event.report.evaluated}
+    ), GenerationEvaluated)
+    try:
+        trainer.start()
+        trainer.join()
+        order = [played[-1].get(genome.tobytes(), math.inf) for _, genome in live.candidates()]
+        assert order == sorted(order)
+        assert order[0] == 0 < max(a for a in order if a != math.inf)
     finally:
         served.lab.retire(live)
 

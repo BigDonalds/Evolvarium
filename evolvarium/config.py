@@ -51,6 +51,15 @@ class EvolutionConfig:
     max_mutation_rate: float = 0.35
     stagnation_step: float = 0.02
 
+    # An experiment, off by default. Equally fit genomes keep their order in the
+    # population, where the elites come first, and only a best game that beats
+    # the record outright sets a new one. At a score ceiling that keeps the
+    # first genome to reach it as champion for the whole run, with stagnation
+    # climbing every generation. On, the younger of two equally fit genomes
+    # ranks first and a best game equal to the record counts as a new one, so
+    # the champion follows the newest genome at the top.
+    younger_wins_ties: bool = False
+
     # Fraction of moves replaced by a random action during evaluation. Kept small:
     # a genome's score should reflect its policy, not the noise floor.
     exploration_rate: float = 0.0

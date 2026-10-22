@@ -604,22 +604,32 @@ class Choice:
 
 
 def candidates_from(path: Path) -> list[tuple[str, np.ndarray]]:
-    """Every genome a checkpoint's run can offer."""
+    """Every genome a checkpoint's run can offer, youngest first."""
     with np.load(path, allow_pickle=False) as archive:
         champion = (
             np.array(archive["best_genome"], dtype=np.float32)
             if "best_genome" in archive.files else None
         )
         population = np.array(archive["genomes"], dtype=np.float32)
-    return gather_candidates(champion, population, _run_dir(path))
+    ages = checkpoint.read_meta(path).get("ages")
+    return gather_candidates(champion, population, _run_dir(path), ages)
 
 
-def gather_candidates(champion: np.ndarray | None, population,
-                      run_dir: Path) -> list[tuple[str, np.ndarray]]:
+def gather_candidates(champion: np.ndarray | None, population, run_dir: Path,
+                      ages=None) -> list[tuple[str, np.ndarray]]:
     """Every genome a run can offer: its champion, its population, its past champions.
 
-    The stored champion is listed first so that, when a population member or an
+    The stored champion goes in first so that, when a population member or an
     archived champion is the same genome, it keeps the name people will recognise.
+
+    A tie in the pick goes to whichever genome is listed first, so given `ages`,
+    one for each member of the population, the list runs youngest first. The
+    stored champion moves to where the member it matches would be, and a
+    champion the population has lost and the past champions come after the
+    whole population. At a score ceiling the champion is only the first genome
+    to get there, and on cart-pole the newer genomes level with it held up far
+    better past the step cap they were trained under. Without ages the list
+    keeps the order above.
     """
     found: list[tuple[str, np.ndarray]] = []
     if champion is not None:
@@ -634,7 +644,12 @@ def gather_candidates(champion: np.ndarray | None, population,
         if key not in seen:
             seen.add(key)
             unique.append((source, genome))
-    return unique
+    if ages is None:
+        return unique
+    held = {np.asarray(genome, dtype=np.float32).tobytes(): int(age)
+            for genome, age in zip(population, ages, strict=True)}
+    # Stable, so genomes of the same age keep their order.
+    return sorted(unique, key=lambda entry: held.get(entry[1].tobytes(), math.inf))
 
 
 def archived_champions(run_dir: Path) -> list[tuple[str, np.ndarray]]:

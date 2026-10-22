@@ -17,6 +17,7 @@ from evolvarium.config import CONFIG
 from evolvarium.contract import override
 from evolvarium.evolution.evaluation import make_runner
 from evolvarium.games.snake import SnakeSettings
+from evolvarium.persistence import checkpoint
 from evolvarium.trainer import Trainer
 
 
@@ -253,10 +254,53 @@ def test_candidates_cover_the_champion_the_population_and_past_champions(tiny_co
     candidates = held_out.candidates_from(latest(run))
 
     sources = [source for source, _ in candidates]
-    assert sources[0] == "stored champion"
+    assert sources.count("stored champion") == 1
     assert sum(source.startswith("population member") for source in sources) >= 1
     keys = [genome.tobytes() for _, genome in candidates]
     assert len(keys) == len(set(keys)), "the same genome must not be scored twice"
+
+
+def test_a_checkpoint_offers_its_newest_genomes_first(tiny_config):
+    run = make_run(tiny_config, 12, "run-y", generations=3)
+    with np.load(latest(run), allow_pickle=False) as archive:
+        population = np.array(archive["genomes"], dtype=np.float32)
+    ages = checkpoint.read_meta(latest(run))["ages"]
+    age = {genome.tobytes(): a for genome, a in zip(population, ages, strict=True)}
+
+    order = [age.get(genome.tobytes(), math.inf)
+             for _, genome in held_out.candidates_from(latest(run))]
+
+    assert order == sorted(order)
+    assert order[0] == 0 < max(a for a in order if a != math.inf)
+
+
+def test_the_newest_genomes_are_listed_first(tmp_path):
+    # Two elites, the older of them the stored champion, then a child and an immigrant.
+    population = [_tagged(1.0), _tagged(2.0), _tagged(3.0), _tagged(4.0)]
+    ages = [5, 2, 0, 0]
+
+    kept = held_out.gather_candidates(_tagged(1.0), population, tmp_path, ages)
+    lost = held_out.gather_candidates(_tagged(9.0), population, tmp_path, ages)
+
+    assert [source for source, _ in kept] == [
+        "population member 2", "population member 3", "population member 1", "stored champion",
+    ]
+    assert [source for source, _ in lost] == [
+        "population member 2", "population member 3", "population member 1",
+        "population member 0", "stored champion",
+    ]
+
+
+def test_a_tie_in_the_pick_goes_to_the_first_genome_listed(tmp_path):
+    population = [_tagged(1.0), _tagged(2.0)]
+    score = _scripted({1.0: (500.0, 500.0), 2.0: (500.0, 500.0)})
+
+    unaged = held_out.gather_candidates(_tagged(1.0), population, tmp_path)
+    aged = held_out.gather_candidates(_tagged(1.0), population, tmp_path, [3, 0])
+
+    assert held_out.choose_by_average(unaged, None, 1, score=score).source == "stored champion"
+    assert (held_out.choose_by_average(aged, None, 1, score=score).source
+            == "population member 1")
 
 
 def test_past_champions_are_found_without_opening_every_generation(tiny_config):

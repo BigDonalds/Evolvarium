@@ -178,12 +178,19 @@ class Population:
             for member in self.members:
                 self.evaluate_individual(member, base_seed, record=record)
 
-        ranked = sorted(self.members, key=lambda i: i.fitness, reverse=True)
+        younger = self.config.evolution.younger_wins_ties
+        if younger:
+            # Age counts the generations a genome has been carried unchanged.
+            ranked = sorted(self.members, key=lambda i: (i.fitness, -i.age), reverse=True)
+        else:
+            ranked = sorted(self.members, key=lambda i: i.fitness, reverse=True)
         best = ranked[0]
 
         record = self.best_ever_score is None or self.better(
             best.best_episode_score, self.best_ever_score
         )
+        if not record and younger:
+            record = best.best_episode_score == self.best_ever_score
         if record:
             self.best_ever_score = best.best_episode_score
             self.best_ever_fitness = best.fitness

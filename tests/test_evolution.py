@@ -148,6 +148,64 @@ def test_best_ever_tracks_the_highest_episode_score(small_config):
         assert population.best_ever_genome is not None
 
 
+def _at_a_ceiling(population, monkeypatch):
+    """Every game scores the same, as when every genome reaches a game's cap."""
+    def play(genome, seed, record):
+        return Outcome(score=5, steps=10, end="capped", fitness=5.0, terms={}, signals={})
+
+    monkeypatch.setattr(population._runner, "play", play)
+
+
+def test_at_a_ceiling_the_first_genome_keeps_the_record(small_config, monkeypatch):
+    population = Population(small_config, seed=14)
+    _at_a_ceiling(population, monkeypatch)
+    first = population.members[0].genome.copy()
+
+    reports = [population.run_generation() for _ in range(4)]
+
+    assert [r.record for r in reports] == [True, False, False, False]
+    assert population.stagnation == 3
+    assert np.array_equal(population.best_ever_genome, first)
+    assert all(r.best.origin == "elite" for r in reports[1:])
+
+
+def test_younger_wins_ties_moves_the_record_to_the_newest_genome(small_config, monkeypatch):
+    config = dataclasses.replace(
+        small_config,
+        evolution=dataclasses.replace(small_config.evolution, younger_wins_ties=True),
+    )
+    population = Population(config, seed=14)
+    _at_a_ceiling(population, monkeypatch)
+
+    for _ in range(4):
+        report = population.run_generation()
+
+        assert report.record
+        assert population.stagnation == 0
+        assert report.best.age == 0 and report.best.origin != "elite"
+        assert np.array_equal(population.best_ever_genome, report.best.genome)
+
+
+def test_younger_wins_ties_leaves_a_better_genome_ahead(small_config, monkeypatch):
+    config = dataclasses.replace(
+        small_config,
+        evolution=dataclasses.replace(small_config.evolution, younger_wins_ties=True),
+    )
+    population = Population(config, seed=15)
+    population.run_generation()
+    elite = next(m for m in population.members if m.origin == "elite")
+
+    def play(genome, seed, record):
+        score = 9 if np.array_equal(genome, elite.genome) else 5
+        return Outcome(score=score, steps=10, end="capped", fitness=float(score), terms={},
+                       signals={})
+
+    monkeypatch.setattr(population._runner, "play", play)
+    report = population.run_generation()
+
+    assert report.best is elite
+
+
 def test_immigrants_and_elites_are_present(small_config):
     population = Population(small_config, seed=13)
     population.run_generation()

@@ -273,9 +273,9 @@ class LiveRun(RunView):
         self.direction = population.game.direction
         self._heard = heard
         self._lock = threading.Lock()
-        # The generation count, the genomes that played and the champion, as of
-        # the last generation scored.
-        self._last: tuple[int, np.ndarray, np.ndarray | None] | None = None
+        # The generation count, the genomes that played, their ages and the
+        # champion, as of the last generation scored.
+        self._last: tuple[int, np.ndarray, list[int], np.ndarray | None] | None = None
         self._unsubscribe = trainer.events.subscribe(self._hear)
         # The page's thread and the command line can both end a run.
         self._retiring = threading.Lock()
@@ -289,12 +289,13 @@ class LiveRun(RunView):
                 np.stack([m.genome for m in members]).astype(np.float32) if members
                 else np.zeros((0, self.architecture.genome_size), dtype=np.float32)
             )
+            ages = [m.age for m in members]
             best = None if event.best_genome is None else np.array(
                 event.best_genome, dtype=np.float32
             )
             with self._lock:
                 # Counted as a checkpoint counts it: the generations finished.
-                self._last = (event.report.generation + 1, genomes, best)
+                self._last = (event.report.generation + 1, genomes, ages, best)
         self._heard(self, event)
 
     def close(self) -> None:
@@ -332,8 +333,8 @@ class LiveRun(RunView):
             last = self._last
         if last is None:
             raise ValueError("no generation has finished yet")
-        _, genomes, best = last
-        return gather_candidates(best, genomes, self.run_dir)
+        _, genomes, ages, best = last
+        return gather_candidates(best, genomes, self.run_dir, ages)
 
     def context(self) -> EvalContext:
         return dataclasses.replace(self.trainer.population.context, exploration_rate=0.0)
@@ -459,11 +460,11 @@ class SavedRun(RunView):
             "problem": self.problem,
         }
 
-    def _archive(self) -> tuple[np.ndarray | None, np.ndarray]:
-        """The newest checkpoint's champion and population, or nothing if it cannot be read."""
+    def _archive(self) -> tuple[np.ndarray | None, np.ndarray, list[int] | None]:
+        """The newest checkpoint's champion, population and ages, or nothing if unreadable."""
         empty = np.zeros((0, 0), dtype=np.float32)
         if self.meta is None:
-            return None, empty
+            return None, empty, None
         try:
             with np.load(self.latest, allow_pickle=False) as archive:
                 champion = (
@@ -472,8 +473,12 @@ class SavedRun(RunView):
                 )
                 population = np.array(archive["genomes"], dtype=np.float32)
         except (OSError, ValueError, KeyError, EOFError):
-            return None, empty
-        return champion, population
+            return None, empty, None
+        ages = self.meta.get("ages")
+        # Ages that don't line up with the population can't order it.
+        if ages is not None and len(ages) != len(population):
+            ages = None
+        return champion, population, ages
 
     def newest_champion(self) -> tuple[int, np.ndarray | None]:
         genome = self._fits(self._archive()[0])
@@ -485,8 +490,8 @@ class SavedRun(RunView):
         return self.champion(available[-1])
 
     def candidates(self) -> list[tuple[str, np.ndarray]]:
-        champion, population = self._archive()
-        found = gather_candidates(champion, population, self.run_dir)
+        champion, population, ages = self._archive()
+        found = gather_candidates(champion, population, self.run_dir, ages)
         return [(source, genome) for source, genome in found if self._fits(genome) is not None]
 
     def context(self) -> EvalContext:

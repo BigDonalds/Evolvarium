@@ -10,6 +10,145 @@ directly.
 
 ---
 
+## Ties - the newer genome first when two score the same
+
+Cart-pole left two engine questions open, and both came down to ties. A game
+there can't score more than 500, so once a genome had 500 in every game, the
+genomes after it could only match it, never beat it. The record stayed with the
+first genome to get there, the mutation rate climbed to its cap with no record
+to bring it back, and the best-average pick fell back to that same genome
+because every finalist averaged 500 as well. In all five target runs it was one
+of the random networks from generation 0.
+
+**Two changes.** The first is in training, behind a new setting,
+`evolution.younger_wins_ties`, which is off by default. With it on, a best game
+that equals the record counts as a new record, so the champion moves to the
+newer genome and the mutation rate drops back. That alone wasn't enough.
+Genomes with the same fitness kept the order the population had them in, elites
+first, so the best of a generation was still the oldest genome on 500. The
+ranking now puts the younger of two equally fit genomes ahead as well. A
+genome's age is how many generations it has been carried over as an elite, and
+children and immigrants start at 0.
+
+The second is in the pick. A tie in `export --pick best-average` goes to
+whichever genome is listed first, and the stored champion used to go first. Now
+the list runs youngest first. The ages come from the checkpoint, or for a live
+run on the dashboard, from the genomes that just played. The stored champion
+takes the place of the population member it matches, and a champion the
+population has lost goes after the whole population, with the past champions. A
+checkpoint without ages keeps the old order.
+
+**Cart-pole.** Seeds 11 to 13 each trained for 100 generations at the default
+settings and again with the setting on. Seed 11 had a third run with the
+mutation rate held at 0.12, to see whether a rate that stays down was all the
+change did. Each run's last population played the 60 dev seeds at the usual 500
+steps, then 20 of them at 20,000 steps, the test from the cart-pole section that
+catches a controller drifting slowly off the end.
+
+| seed | setting | mean | full every time at 500 | all 20 at 20,000 | stored champion at 20,000 |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 11 | default | 449.1 | 129 of 150 | 115 of 150 | 0 of 20 |
+| 11 | younger wins ties | 486.6 | 144 of 150 | 139 of 150 | 20 of 20 |
+| 11 | rate held at 0.12 | 458.5 | 127 of 150 | 122 of 150 | 0 of 20 |
+| 12 | default | 482.1 | 134 of 150 | 117 of 150 | 0 of 20 |
+| 12 | younger wins ties | 488.2 | 145 of 150 | 138 of 150 | 20 of 20 |
+| 13 | default | 482.7 | 138 of 150 | 135 of 150 | 20 of 20 |
+| 13 | younger wins ties | 487.3 | 146 of 150 | 146 of 150 | 20 of 20 |
+
+The mean is over the whole last population on the 60 dev seeds. With the
+setting on, every generation set a record, so the rate never left 0.12 and the
+stored champion was always a genome one generation old. The default runs set one
+record each, in generation 0, and their champions were still that genome at age
+100. Two of those three didn't last 20,000 steps on any of the 20 seeds, and
+averaged 972 and 1,345 steps. Across the populations it was the same story, with
+138 to 146 genomes lasting all 20 with the setting on, against 115 to 135
+without. Holding the rate at 0.12 and leaving ties alone did no better than the
+default, so on seed 11 the gain came from the ranking, not from the calmer rate.
+At 500 steps none of this shows. Every pick, either way, kept the pole up in all
+60 dev episodes.
+
+The pick change was tried on its own too, on runs trained at the default. That
+included the five target runs, using only dev seeds, with the held-out block
+left alone. Listed the old way, each of them picked its generation-0 champion,
+and two of the five lasted all 20 at 20,000 steps. Listed youngest first, each
+picked a child from the last generation, and four of the five lasted all 20. The
+fifth averaged 9,928 steps. With the three default runs above added in, that's 7
+of 8 against 3 of 8. On all seven runs in the table, the youngest-first pick was
+a child from the last generation and lasted all 20.
+
+**Snake and the arena.** Both changes are in the engine, so they had to be tried
+where there isn't a ceiling. The arena trained on seeds 11 and 12 for 300
+generations and Snake on seed 11 for 150, with the setting on and everything
+else as in the default rows of the arena section, so a fall cost of 0.5 and
+crossover at 0.25. Every genome was scored the same way as there.
+
+| game | seed | setting | stored champion | best-average pick | team fell or starved, pick |
+| --- | ---: | --- | ---: | ---: | ---: |
+| arena | 11 | default | 68.3 | 98.7 | 0 |
+| arena | 11 | younger wins ties | 82.7 | 104.6 | 0 |
+| arena | 12 | default | 82.9 | 107.0 | 0 |
+| arena | 12 | younger wins ties | 90.9 | 111.9 | 5 |
+| Snake | 11 | default | 61.7 | 69.5 | 2 |
+| Snake | 11 | younger wins ties | 68.2 | 90.4 | 0 |
+
+The default rows are the runs from the arena section, not new ones. The pick
+change did nothing here. Arena and Snake scores are averages of shaped scores
+and never came out level, so both orders chose the same genome in all six runs,
+and every pick figure already in this file stands.
+
+The setting came out ahead in all three runs, but each is a single run, and they
+parted ways early. In the arena, two genomes with the same fitness swapped
+places in generation 2, and the runs went their own way from there. The Snake
+runs matched until generation 44, when a game equalled the record and the count
+of generations without one went back to 0. Ties were only one or two of each
+run's records, and the record counts went both ways: 21 against 26 on arena seed
+11, 27 against 20 on seed 12, and 20 against 24 on Snake, default first.
+The arena gains, about 6 and 5 points for the pick, are smaller than the gap
+between the two seeds. Snake's 21 points is well beyond the 3 points the
+crossover runs were apart, and its last record came in generation 130 against
+69, but it's still one seed. On arena seed 12 the pick lost the team in 5
+matches, inside the 6 the target allows but closer to it than any default run,
+and the stored champion lost it in 10.
+
+**What stays.** The pick change is on, with no setting, for
+`export --pick best-average` and for choosing on the dashboard, live runs and
+saved ones alike. It only decides between genomes that are level, so where
+scores never tie it changes nothing. Exporting the five cart-pole target runs
+again would now give a child from the last generation instead of the
+generation-0 genome. The held-out figures in the cart-pole section are for the
+genomes exported then, and they stay the result of that target.
+
+The training change stays off. It did what it was meant to on cart-pole and
+didn't hurt Snake or the arena, but one run a game isn't enough to switch on a
+default every game uses, the same as with crossover. A second Snake seed is the
+first thing to run when it comes back. It also has costs at a ceiling. With a
+record every generation, `latest.npz`, about 150 KB, is written every
+generation, the log prints every generation even with `--report-every 25`, every
+replay is pinned so the retention limit never removes one, and the dashboard's
+list of past champions grows by one a generation. None of that matters for 100
+generations, but it would on a long run.
+
+**How long it took.** About four hours, from 11:20 to a quarter past three on 22
+October. The seven cart-pole runs took 17 minutes between them, anywhere from
+under 2 minutes to 5 each. Scoring their last populations took 9 minutes and
+checking the picks about a minute and a half. The two arena runs took 9 and 8
+minutes. Snake took two and a half hours, at the slow end of the 93 to 150
+minutes the crossover runs took, and about 11.5 minutes of that was the laptop
+dropping into standby twice, and it finished on battery. Scoring the six arena
+and Snake runs and choosing their picks took a little over 8 minutes.
+
+**Checking it.** Three new tests in `tests/test_evolution.py` use a game where
+every genome scores the same. With the setting off, the first genome keeps the
+record and the run goes on without one. With it on, every generation sets a
+record and the champion is the newest genome, not an elite. And a younger genome
+still doesn't get ahead of a better one. In `tests/test_held_out.py`, the
+candidates are listed youngest first, a tie goes to the first one listed, and a
+checkpoint offers its newest genomes first. `tests/test_server.py` checks that a
+live run on the dashboard does the same, and the check that the page picks what
+the command line picks for a saved run still holds.
+
+---
+
 ## Cart-pole - a pole on a cart, and the first game that pushes with a force
 
 Every built-in game so far picked its move from a short list. Snake turns left,
