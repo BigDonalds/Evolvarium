@@ -10,6 +10,149 @@ directly.
 
 ---
 
+## Cart-pole - a pole on a cart, and the first game that pushes with a force
+
+Every built-in game so far picked its move from a short list. Snake turns left,
+right or goes straight, and an arena agent takes one of five steps. The contract
+has let an action be a number within a range since model files learnt to hold
+them, but the only game using one was Herd, the test game with a stride.
+Cart-pole, in `evolvarium/games/cartpole`, is the first real game where the
+network gives a number instead of a choice.
+
+**The game.** A cart runs on a level track with a pole 1 metre long hinged to
+its top. Each step the network gives a push anywhere from 10 newtons left to 10
+right, and the cart is pushed with it for 0.02 seconds. The pole has fallen once
+it leans more than 12 degrees from upright, and the cart has run off once its
+centre is more than 2.4 metres from the middle. Either one ends the episode, and
+so does the last step, 500 by default, which is 10 seconds of the cart's time.
+The score counts the steps after which the pole was still up and the cart still
+on the track, so a full episode scores 500. The motion is that of a cart and a
+uniform pole without friction, moved on one step at a time by Euler's method,
+and the equations are written out at the top of `engine.py`. The seed only sets
+where the cart and pole start, with the position, speed, angle and spin each
+within 0.05 of zero, so an episode follows from the seed and the pushes alone.
+
+**What the network sees.** Four numbers: where the cart is as a share of the
+half-track, how fast it's going, the pole's angle as a share of the fall angle,
+and how fast the pole is turning. The first and third stay between -1 and 1 for
+as long as the episode lasts. The network has one output, and the engine
+stretches its tanh onto the range of pushes, which is what a `Range` part
+already did. The engine didn't change at all for this game. Cart-pole is just
+another entry in the registry.
+
+**Settings.** Ten, in four sections: the cart's mass, hardest push and half the
+track's length; the pole's mass, length and fall angle; gravity and the time a
+step stands for; and an episode's length and how far from zero it starts. Most
+have to be above 0, while gravity and the start spread can be 0. A fall angle over 90 degrees is
+refused, because by then the pole would be lying below the track. A start spread
+as wide as the half-track or the fall angle in radians is refused too, since a
+start that wide could have the pole down or the cart off the end before the
+first push.
+
+**What an episode reports.** Whether it went the full length, and three means
+over its steps: drift, how far the cart was from the middle as a share of the
+half-track; lean, how far the pole leant as a share of the fall angle; and
+effort, how hard the cart was pushed as a share of its hardest push. The export
+panel lists six achievements: 50, 100 and 250 steps, a champion going the full
+length once, going it in every episode it played, and doing that with the cart
+kept within a tenth of the half-track of the middle on average.
+
+**On the dashboard.** The scene is in metres with y pointing up: the track, a
+stop at each end, the cart, and the pole, which turns purple once it has fallen.
+The labels give the steps, the pole's angle in degrees and the cart's position.
+The page draws a frame every 90 ms at 1× and a cart-pole step is 20 ms, so a
+replay runs at a bit under a quarter of real time, and 4× is about real time.
+That's slow enough to watch every correction the network makes, so it stays as
+it is rather than having scenes carry a time per step.
+
+**Hand-written controllers.** `python -m evolvarium.games.cartpole.scripted`
+plays five of them on the 60 held-out seeds, reading the same four inputs and
+pushing anywhere from full left to full right. Still never pushes, wander pushes
+at random, and lean pushes full force whichever way the pole leans. Upright
+pushes in proportion to the pole's angle and spin and pays the cart no
+attention. Steady does what upright does and also pushes toward the side the
+cart has drifted to and the way it's rolling. That tips the pole back toward the
+middle, and the cart follows it.
+
+| controller | steps | full length | drift | lean | effort | ends |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| still | 38.2 | 0 of 60 | 0.011 | 0.377 | 0.000 | fell 60 |
+| wander | 25.8 | 0 of 60 | 0.020 | 0.383 | 0.506 | fell 60 |
+| lean | 40.8 | 0 of 60 | 0.031 | 0.423 | 1.000 | fell 60 |
+| upright | 500.0 | 60 of 60 | 0.199 | 0.004 | 0.001 | balanced 60 |
+| steady | 500.0 | 60 of 60 | 0.006 | 0.009 | 0.003 | balanced 60 |
+
+Every column but full length and the ends is a mean over the 60 episodes.
+Slamming full force at the lean does barely better than doing nothing. Upright
+and steady both last all 500 steps every time, and the difference is where the
+cart ends up. Upright lets it wander a fifth of the way to the end on average,
+while steady keeps it within about a centimetre and a half of the middle.
+
+**Untrained networks.** Before setting a target it seemed worth seeing what a
+population does before any training at all. The starting genomes of two
+populations, from seeds 21 and 22, each played the 60 dev seeds, 700000 to
+700059, with no selection. Of those 300 random networks, 8 kept the pole up for
+all 500 steps in every one of the 60 episodes, and 21 managed it at least once.
+All 8 kept the cart within 0.066 of the middle, inside the tenth the last
+achievement asks for. Across all 300 the mean was 73.6 steps. So a population of
+150 starts out with about four networks that can already do the job. That took
+20 seconds to find out.
+
+Longer episodes looked like the obvious fix, on the idea that a lucky network
+would drift off the end sooner or later. On 20 of the dev seeds:
+
+| episode length | upright | steady | random networks lasting all 20 |
+| ---: | ---: | ---: | ---: |
+| 500 | 20 of 20 | 20 of 20 | 8 of 300 |
+| 5,000 | 4 of 20 | 20 of 20 | 5 of 300 |
+| 20,000 | 2 of 20 | 20 of 20 | 5 of 300 |
+
+Longer episodes do catch upright, whose drift takes it off the end in the end,
+but they hardly touch the random networks. Five of them lasted 20,000 steps,
+almost seven minutes of the cart's time, on all 20 seeds. Both controllers that
+work are a weighted sum of the inputs, and a small random network near zero
+isn't far from a weighted sum itself, which is probably why so many land on one
+that works. Since longer episodes don't change the picture, 500 stays the
+default.
+
+Two short runs trained on seed 21 while the game was being built. A three
+generation run without the dashboard already had a 500 in its first generation,
+and a 60-generation run on the dashboard took the mean score from 81 in the
+first generation to about 457 by the 44th, at 25 to 35 generations a minute on
+four workers. Neither touched seeds 1 to 5 or the held-out block.
+
+**The target, set before any training.** Five runs train at the default
+settings for 100 generations each, with seeds 1 to 5. Each run's genome is
+chosen by its average on seeds from 800000, as `export --pick best-average`
+does, and then plays the 60 held-out seeds with `evaluate`. A run passes if that
+genome keeps the pole up for all 500 steps in all 60 episodes, and cart-pole
+counts as learnt only if all five pass. Drift will be given next to steady's
+0.006 and upright's 0.199, but it isn't part of passing. After the untrained
+networks above, a pass doesn't say much about learning. It says the engine
+trains a game with a continuous action from start to finish without a change to
+the engine. It doesn't say cart-pole needs evolution, when one line of
+arithmetic and a few random networks in every population already balance the
+pole. The harder tests of learning are the games still to come.
+
+**Speed.** In one process, on battery, the rules and the inputs take 1.2 µs a
+step, and with a network choosing the push it's 7.6 µs, about 132,000 steps a
+second. A full episode is 500 steps.
+
+**Checking it.** `tests/test_cartpole.py` has 26 tests. One works out the first
+step from rest by hand from the equations and checks the cart's speed and the
+pole's spin against it. The others cover the same seed giving the same episode,
+a leaning pole falling further and rolling the cart back, a push past the
+hardest being cut back to it, each way an episode ends, the inputs and their
+scaling, the force range following `cart.force`, the scene and a replay of it,
+every setting that is refused, the achievements, a population playing,
+workers and one process scoring alike, an exported model playing as it
+trained, and the hand-written controllers doing on the held-out seeds what the
+table says. In the browser the 60-generation run above drew the track, cart and
+pole in every replay, with fallen poles in purple and the steps, angle and
+position labels following along, and the console stayed clean.
+
+---
+
 ## The arena again - a cost for falling, and what crossover is worth
 
 The first attempt at the arena's target failed two ways. Seeds 3 and 4 lost the

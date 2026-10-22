@@ -87,12 +87,17 @@ a seed, takes an action for every agent each step, and says how each episode
 ended and whether a higher or a lower score is better. The engine sizes the
 network from that and turns its outputs back into the game's own actions.
 
-Two games are built in and go by their short names, as in `train --game arena`.
+Three games are built in and go by their short names, as in `train --game arena`.
 Snake is in `evolvarium/games/snake`. The arena, in `evolvarium/games/arena`,
 puts a team of agents with health on one floor to eat, heal and chase a scripted
 rival that turns on them when they are hurt, and every agent plays the same
 network. `python -m evolvarium.games.arena.scripted` plays hand-written teams on
-the held-out seeds, the figures a trained team is measured against.
+the held-out seeds, the figures a trained team is measured against. Cart-pole,
+in `evolvarium/games/cartpole`, keeps a pole upright on a cart by pushing the
+cart along a track, and the network gives the push as a force rather than
+picking a move. Its score is the number of steps the pole stayed up, out of 500
+by default, and `python -m evolvarium.games.cartpole.scripted` does the same for
+hand-written controllers.
 
 Any other game is named `module:Class` and imported from wherever Python finds
 it, so `train --game package.module:Class` trains it and

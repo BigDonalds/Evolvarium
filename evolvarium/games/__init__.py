@@ -19,6 +19,7 @@ from ..contract import DIRECTIONS, Game, closest
 
 _BUILT_IN = {
     "arena": "evolvarium.games.arena:ArenaGame",
+    "cartpole": "evolvarium.games.cartpole:CartPoleGame",
     "snake": "evolvarium.games.snake:SnakeGame",
 }
 
