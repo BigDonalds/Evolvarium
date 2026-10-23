@@ -274,7 +274,8 @@ class Population:
             if self.rng.random() < evo.crossover_rate:
                 second = selection.select(pool, self.rng, evo.selection, evo.tournament_size)
                 genome = operators.blend(
-                    first.genome, second.genome, self.rng, evo.crossover_method
+                    first.genome, second.genome, self.rng, evo.crossover_method,
+                    self.architecture.layer_sizes,
                 )
                 parents = (first.id, second.id)
                 origin = "crossover"

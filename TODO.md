@@ -10,10 +10,3 @@ Items still open at the baseline are in Snake-AI's
 
 - **`scored%`** counts genomes whose best episode scored above zero, which says
   nothing about a game that wants its score low.
-
-## Engine
-
-- **`layer_uniform` crossover is `uniform`.** Its comment says it swaps whole
-  rows so each unit keeps its input weights together, but it draws a mask per
-  gene exactly as `uniform` does. It needs the network's layer shapes to swap
-  rows, and a run that chose it so far has trained under `uniform`.

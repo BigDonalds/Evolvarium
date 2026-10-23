@@ -16,8 +16,13 @@ MUTATIONS = ("gaussian", "polynomial")
 
 
 def blend(parent_a: np.ndarray, parent_b: np.ndarray, rng: np.random.Generator,
-          method: str = "weighted_average") -> np.ndarray:
-    """Combine two genomes."""
+          method: str = "weighted_average",
+          layer_sizes: tuple[int, ...] | None = None) -> np.ndarray:
+    """Combine two genomes.
+
+    `layer_sizes` is the network's, inputs first, and only `layer_uniform`
+    needs it.
+    """
     if method == "weighted_average":
         weight = rng.beta(2.0, 2.0)
         return (weight * parent_a + (1.0 - weight) * parent_b).astype(np.float32)
@@ -31,12 +36,33 @@ def blend(parent_a: np.ndarray, parent_b: np.ndarray, rng: np.random.Generator,
         return np.concatenate([parent_a[:cut], parent_b[cut:]]).astype(np.float32)
 
     if method == "layer_uniform":
-        # Swapping whole rows keeps each receiving unit's input weights together,
+        # Each unit takes all of its input weights and its bias from one parent,
         # which is less disruptive than mixing individual connections.
-        mask = rng.random(parent_a.size) < 0.5
+        mask = _unit_mask(layer_sizes, parent_a.size, rng)
         return np.where(mask, parent_a, parent_b).astype(np.float32)
 
     raise ValueError(f"unknown crossover method {method!r}")
+
+
+def _unit_mask(layer_sizes: tuple[int, ...] | None, size: int,
+               rng: np.random.Generator) -> np.ndarray:
+    """True for every gene of a unit that comes from the first parent.
+
+    The genome holds each layer as its weights, one row per input, then its
+    biases, as the network unpacks it. A unit's input weights are a column of
+    that block, so its choice repeats once per row and once more for its bias.
+    """
+    if layer_sizes is None:
+        raise ValueError("layer_uniform crossover needs the network's layer sizes")
+    parts: list[np.ndarray] = []
+    for fan_in, fan_out in zip(layer_sizes[:-1], layer_sizes[1:], strict=True):
+        first = rng.random(fan_out) < 0.5
+        parts.append(np.tile(first, fan_in))
+        parts.append(first)
+    mask = np.concatenate(parts)
+    if mask.size != size:
+        raise ValueError(f"layer sizes {layer_sizes} need {mask.size} genes, genome has {size}")
+    return mask
 
 
 def mutate(genome: np.ndarray, rng: np.random.Generator, rate: float, strength: float,

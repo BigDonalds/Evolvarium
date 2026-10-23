@@ -10,6 +10,37 @@ directly.
 
 ---
 
+## Crossover by unit - `layer_uniform` does what it says
+
+`evolution.crossover_method` has four choices. The fourth, `layer_uniform`, was
+meant to give each unit all of its input weights from one parent. It never did.
+Since the baseline it has tossed a coin for every gene, exactly as `uniform`
+does, so a unit could end up with half its weights from each parent.
+
+Now the coin is tossed once for each unit, and the unit takes every input weight
+and its bias from the parent it lands on. A layer's weights sit in the genome a
+row per input, so a unit's weights are a column of that block, and crossover
+needs the layer sizes to find them. The population passes its network's.
+Asking for `layer_uniform` without them, or with sizes that don't add up to the
+genome, is an error rather than a quiet fall back to `uniform`.
+
+None of the runs so far chose it, and the default is still `weighted_average`,
+so no result in this file changes. Keeping a unit whole doesn't fix what the top
+of `operators.py` says about crossover, either. The units in the next layer
+still choose their own parent, so one of them can end up reading a unit from the
+other parent that computes something else. Whether it beats blending is a
+question for when crossover itself is reworked.
+
+**Checking it.** `tests/test_operators.py` is new, with 4 tests. Over 400
+crossovers of two genomes with no gene value in common, every unit of every
+child is exactly one parent's, and each unit comes from the first parent between
+40% and 60% of the time. The same check catches `uniform` mixing a unit's genes.
+A population bred with crossover for every child and mutation off has children
+whose units are each one parent's, with units from both parents among them, and
+missing or mismatched layer sizes are refused.
+
+---
+
 ## Ties - the newer genome first when two score the same
 
 Cart-pole left two engine questions open, and both came down to ties. A game
