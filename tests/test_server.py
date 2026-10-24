@@ -20,7 +20,7 @@ from evolvarium.config import CONFIG
 from evolvarium.events import GenerationEvaluated
 from evolvarium.games.snake.game import SnakeGame
 from evolvarium.games.snake.settings import BoardConfig, EpisodeConfig, SnakeSettings
-from evolvarium.persistence import export_model, model_file
+from evolvarium.persistence import export_model, jobs, model_file
 from evolvarium.replays import unpack
 from evolvarium.trainer import Trainer
 from evolvarium.web import runs
@@ -200,7 +200,7 @@ def test_the_runs_are_listed_newest_first(served):
     train(served.config, "later", 5, generations=1)
     listing = fetch(served.port, "/api/runs")
     assert [row["run_id"] for row in listing["runs"]] == ["later", "served"]
-    assert listing["live"] is None and listing["can_start"] is True
+    assert listing["live"] == [] and listing["can_start"] is True
     row = listing["runs"][1]
     assert row["game"] == "snake" and row["generations"] == 2 and row["seed"] == 4
     assert row["problem"] is None and row["updated_seconds_ago"] >= 0
@@ -230,8 +230,8 @@ def test_every_problem_with_a_new_run_is_reported_at_once(served):
     assert "did you mean evolution.population_size?" in problems
     assert "paths.runs_dir is the dashboard's to set" in problems
     assert "generations takes a whole number of 1 or more" in problems
-    assert served.lab.live is None
-    assert fetch(served.port, "/api/runs")["live"] is None
+    assert served.lab.live == []
+    assert fetch(served.port, "/api/runs")["live"] == []
 
     unknown = post(served.port, "/api/runs/start", {"game": "no-such-game"})
     assert unknown["problems"]
@@ -241,7 +241,7 @@ def test_the_dashboard_of_one_run_starts_no_others(config):
     lab = Lab(config, can_start=False)
     reply = lab.start("snake", {})
     assert "serve command" in reply["problems"][0]
-    assert lab.live is None
+    assert lab.live == []
 
 
 def test_a_run_started_on_the_page_trains_and_is_then_read_from_disk(served):
@@ -250,10 +250,11 @@ def test_a_run_started_on_the_page_trains_and_is_then_read_from_disk(served):
     })
     assert reply["ok"], reply
     run_id = reply["run"]
-    wait_for(lambda: served.lab.live is None)
+    wait_for(lambda: not served.lab.live)
 
     status = fetch(served.port, f"/api/status?run={run_id}")
     assert status["live"] is False and status["generation"] == 1
+    assert status["job_state"] == "finished" and status["waiting"] is False
     assert status["seed"] == reply["seed"]
     assert status["population_size"] == 8
     assert "evolution.population_size=8" in status["label"]
@@ -280,16 +281,22 @@ def test_only_the_live_run_is_held_and_stopped(served):
     assert "error" in post(served.port, "/api/runs/stop", {})
 
     run_id = post(served.port, "/api/runs/start", {"game": "snake"})["run"]
-    assert post(served.port, "/api/runs/start", {"game": "snake"})["problems"]
-    assert fetch(served.port, "/api/runs")["live"] == run_id
+    second = post(served.port, "/api/runs/start", {"game": "snake"})["problems"]
+    assert second == [
+        f"{run_id} is still training, and the dashboard has one worker; stop it first"
+    ]
+    assert fetch(served.port, "/api/runs")["live"] == [run_id]
     wait_for(lambda: fetch(served.port, "/api/status")["generation"] >= 1)
-    assert post(served.port, "/api/heartbeat")["gate"] is not None
+    assert post(served.port, "/api/heartbeat", {"run": run_id})["gate"] is not None
+    assert post(served.port, "/api/heartbeat", {"run": "served"})["gate"] is None
     assert "error" in post(served.port, "/api/control", {"run": "served", "action": "hold"})
 
     assert post(served.port, "/api/runs/stop", {"run": run_id})["ok"]
-    wait_for(lambda: served.lab.live is None)
+    wait_for(lambda: not served.lab.live)
     status = fetch(served.port, f"/api/status?run={run_id}")
     assert status["running"] is False and status["generation"] >= 1
+    assert status["job_state"] == "stopped"
+    assert jobs.read(served.config.paths.runs_dir / run_id)["state"] == "stopped"
 
 
 def test_runs_are_set_side_by_side(served):

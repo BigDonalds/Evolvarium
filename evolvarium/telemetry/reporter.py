@@ -4,6 +4,9 @@ Every figure printed here comes from the generation that just finished being
 evaluated, never from the freshly bred population that has not played yet.
 Reporting after the population is replaced is what produces the familiar
 "scoring individuals: 5/100" line that only ever counts the elites.
+
+When several runs train in one process, each run's reporter is given a tag that
+starts every line it prints, so the runs can be told apart as their lines mix.
 """
 
 from __future__ import annotations
@@ -50,9 +53,11 @@ def _rule_character() -> str:
 
 
 class ConsoleReporter:
-    def __init__(self, *, colour: bool | None = None, every: int = 1):
+    def __init__(self, *, colour: bool | None = None, every: int = 1, tag: str | None = None):
         self.colour = _supports_colour() if colour is None else colour
         self.every = max(1, every)
+        self.tag = tag
+        self.lead = "  " if tag is None else f"  [{tag}] "
         self.started = time.time()
         self.rule = _rule_character()
         self._last_checkpoint: CheckpointSaved | None = None
@@ -86,7 +91,7 @@ class ConsoleReporter:
         print(self._paint(line, _DIM))
         print(self._paint("  evolvarium  |  neuroevolution", _BOLD))
         print(self._paint(line, _DIM))
-        print(f"  run           {run_id}")
+        print(f"  run           {run_id}" + ("" if self.tag is None else f"  [{self.tag}]"))
         print(f"  generation    {generation}")
         print(f"  population    {population}")
         print(f"  game          {game}")
@@ -111,7 +116,7 @@ class ConsoleReporter:
         )
 
         print(
-            f"  gen {report.generation:>5}"
+            f"{self.lead}gen {report.generation:>5}"
             f"  best {report.max_episode_score:>3g}"
             f"  mean {report.mean_score:>6.3f}"
             f"  scored% {report.scoring_fraction * 100:>5.1f}"
@@ -125,13 +130,15 @@ class ConsoleReporter:
         )
 
     def held(self, generation: int) -> None:
-        print(self._paint(f"  held at generation {generation} — dashboard is viewing", _YELLOW))
+        print(self._paint(
+            f"{self.lead}held at generation {generation} — dashboard is viewing", _YELLOW
+        ))
 
     def resumed(self, generation: int, reason: str) -> None:
-        print(self._paint(f"  resumed from generation {generation} ({reason})", _DIM))
+        print(self._paint(f"{self.lead}resumed from generation {generation} ({reason})", _DIM))
 
     def note(self, message: str) -> None:
-        print(f"  {message}")
+        print(f"{self.lead}{message}")
 
     def finished(self, event: RunFinished) -> None:
         if event.error:
@@ -158,9 +165,10 @@ class ConsoleReporter:
         line = self.rule * 62
         print()
         print(self._paint(line, _DIM))
-        print(f"  generations   {generation}")
-        print(f"  episodes      {episodes:,}")
-        print(f"  best score    {'-' if best is None else best}")
-        print(f"  runtime       {hours:02d}:{minutes:02d}:{seconds:02d}")
-        print(f"  checkpoint    {checkpoint}")
+        lead = self.lead
+        print(f"{lead}generations   {generation}")
+        print(f"{lead}episodes      {episodes:,}")
+        print(f"{lead}best score    {'-' if best is None else best}")
+        print(f"{lead}runtime       {hours:02d}:{minutes:02d}:{seconds:02d}")
+        print(f"{lead}checkpoint    {checkpoint}")
         print(self._paint(line, _DIM))

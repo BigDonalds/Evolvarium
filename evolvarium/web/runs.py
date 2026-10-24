@@ -1,10 +1,15 @@
-"""The runs a dashboard shows: the one training in this process and those on disk.
+"""The runs a dashboard shows: those training in this process and those on disk.
 
 The dashboard that `train` starts shows that run. The one `serve` starts can
-also start runs of any game, one at a time, and reads every run in the runs
-directory back from what the run left there: its manifest, its history, its
-replays and its newest checkpoint. A run training here and a run read from disk
-answer the same questions, so the server does not need to know which it has.
+also start runs of any game, as many at once as it has workers, and reads every
+run in the runs directory back from what the run left there: its manifest, its
+history, its replays and its newest checkpoint. A run training here and a run
+read from disk answer the same questions, so the server does not need to know
+which it has.
+
+A run started here records in `job.json` that it is meant to be training. When
+the dashboard is stopped or killed part way through, the next one on the same
+runs directory finds those runs and carries each on from its newest checkpoint.
 
 Choosing a model by its average plays a few thousand games. It runs as a job on
 its own thread, one at a time, and the page polls it for progress.
@@ -28,14 +33,14 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .. import games, settings
-from ..config import CONFIG, Config, HistoryConfig
+from ..config import CONFIG, SECTIONS, Config, HistoryConfig
 from ..contract import load_settings
-from ..events import Event, EventBus, GenerationEvaluated, RunFinished
+from ..events import Event, EventBus, GenerationEvaluated, Note, RunFinished
 from ..evolution.evaluation import EvalContext
-from ..evolution.pool import resolve_workers
+from ..evolution.pool import WorkerBudget, resolve_workers
 from ..held_out import choose_by_average, describe, gather_candidates, search_settings
 from ..nn.network import Architecture
-from ..persistence import checkpoint, export_model
+from ..persistence import checkpoint, export_model, jobs
 from ..settings import SettingsError
 from ..telemetry.history import HistoryStore, lineage_summaries
 
@@ -67,7 +72,7 @@ def _read_json(path: Path) -> dict | None:
 def _stamp(run_dir: Path) -> tuple:
     """Changes whenever a run writes something the dashboard reads from it."""
     parts = []
-    for name in ("run.json", "history.jsonl", "checkpoints/latest.npz"):
+    for name in ("run.json", "history.jsonl", "checkpoints/latest.npz", jobs.JOB_FILE):
         try:
             info = (run_dir / name).stat()
         except OSError:
@@ -170,9 +175,14 @@ class RunView:
         found = checkpoint.list_checkpoints(self.run_dir / "checkpoints")
         return {"checkpoints": [c.to_dict() for c in found]}
 
+    def job(self) -> dict:
+        """What the dashboard that started the run last wrote of it, or nothing."""
+        return jobs.read(self.run_dir) or {}
+
     def entry(self) -> dict:
         """The run's line in the list of runs."""
         status = self.status()
+        job = self.job()
         return {
             "run_id": self.run_id,
             "game": status["game"],
@@ -187,6 +197,8 @@ class RunView:
             "running": status["running"],
             "updated_at": None if self.live else _updated_at(self.run_dir),
             "problem": self.problem,
+            "job_state": job.get("state"),
+            "job_error": job.get("error"),
         }
 
     def comparison(self) -> dict:
@@ -548,13 +560,30 @@ class ExportJob:
         }
 
 
+@dataclass(eq=False)
+class _Waiting:
+    """A run a restart cut off, held until a worker comes free to carry it on."""
+
+    run_dir: Path
+    config: Config
+    resume_from: Path | None
+    seed: int | None
+    generations: int | None
+    generation: int
+
+
 class Lab:
-    """Every run under one runs directory, with at most one training here at a time.
+    """Every run under one runs directory, and the runs training here.
 
     `config` is what a new run starts from before the form changes it, and its
     paths, server and held-out sections hold for every run. `can_start` is
     whether the page may start runs. `announce(trainer)` is called for each run
-    started, before it starts, so the command line can report it too.
+    started or carried on, before it starts, so the command line can report it
+    too.
+
+    The runs started here share the workers `config` gives the dashboard, one
+    run to a worker at most. Each holds its job's lock while it trains, so two
+    dashboards on one runs directory never carry the same run on.
     """
 
     def __init__(self, config: Config, *, can_start: bool,
@@ -563,7 +592,13 @@ class Lab:
         self.can_start = can_start
         self._announce = announce
         self._lock = threading.RLock()
-        self._live: LiveRun | None = None
+        self.budget = WorkerBudget(resolve_workers(config.evolution.workers))
+        self._live: dict[str, LiveRun] = {}
+        # Runs carried on as workers come free, oldest first.
+        self._waiting: OrderedDict[str, _Waiting] = OrderedDict()
+        # The job lock of every run started or carried on here, held until it ends.
+        self._locks: dict[str, jobs.JobLock] = {}
+        self._closing = False
         self._listeners: list[Callable[[str, Event], None]] = []
         self._open: OrderedDict[str, tuple[tuple, SavedRun]] = OrderedDict()
         self._entries: dict[str, tuple[tuple, dict]] = {}
@@ -584,9 +619,23 @@ class Lab:
         return self.config.paths.exports_dir
 
     @property
-    def live(self) -> LiveRun | None:
+    def live(self) -> list[LiveRun]:
+        """The runs training here, in the order they started."""
         with self._lock:
-            return self._live
+            return list(self._live.values())
+
+    @property
+    def waiting(self) -> list[str]:
+        """The runs waiting for a worker, in the order they will be carried on."""
+        with self._lock:
+            return list(self._waiting)
+
+    def training(self, name: str | None) -> LiveRun | None:
+        """The run called `name` if it trains here. Without a name, the only one that does."""
+        with self._lock:
+            if name:
+                return self._live.get(name)
+            return next(iter(self._live.values())) if len(self._live) == 1 else None
 
     def config_for(self, game: str) -> Config:
         """The configuration a new run of `game` starts from."""
@@ -619,20 +668,50 @@ class Lab:
             listeners = list(self._listeners)
         for callback in listeners:
             callback(run.run_id, event)
-        if isinstance(event, RunFinished) and self.can_start:
+        if not isinstance(event, RunFinished):
+            return
+        self._ended_as(run, event)
+        if self.can_start:
             # The trainer thread is the one announcing this, so it cannot be
             # joined from here.
             threading.Thread(
                 target=self.retire, args=(run,), name="retire", daemon=True
             ).start()
 
+    def _ended_as(self, run: LiveRun, event: RunFinished) -> None:
+        """Write how a run started here ended.
+
+        A run stopped from the page was written as stopped when it was asked to.
+        One stopped by the dashboard's own end is left training, and that is
+        what has the next dashboard carry it on.
+        """
+        if event.reason == "limit":
+            self._write_job(run.run_id, state="finished")
+        elif event.reason == "error":
+            self._write_job(run.run_id, state="failed", error=event.error)
+
+    def _write_job(self, name: str, **fields) -> None:
+        with self._lock:
+            if name not in self._locks:  # not a run this dashboard started
+                return
+            try:
+                jobs.update(self.runs_dir / name, **fields)
+            except OSError:
+                # Left as it was. A job still training is carried on next time,
+                # and a run that had reached its limit ends again at once.
+                pass
+
     def retire(self, run: LiveRun, timeout: float | None = 10.0) -> None:
         """Stop `run` and let it go, so it is read from disk like any other."""
         run.retire(timeout)
         with self._lock:
             self._ended[run.run_id] = time.time()
-            if self._live is run:
-                self._live = None
+            if self._live.get(run.run_id) is run:
+                del self._live[run.run_id]
+            lock = self._locks.pop(run.run_id, None)
+        if lock is not None:
+            lock.release()
+        self._next()
 
     def ended_here(self, run: RunView) -> bool:
         """Whether `run` trained here and has not been written to since it ended."""
@@ -648,11 +727,20 @@ class Lab:
     # ------------------------------------------------------------------ runs
 
     def adopt(self, trainer: Trainer) -> LiveRun:
-        """Show `trainer` as the live run. Called before it starts, so no event is missed."""
+        """Show `trainer` as training here. Called before it starts, so no event is missed."""
         run = LiveRun(trainer, self._heard)
         with self._lock:
-            self._live = run
+            self._live[trainer.run_id] = run
         return run
+
+    def _launch(self, trainer: Trainer, note: str | None = None) -> None:
+        """Announce, show and start a run, with `note` the first thing it says."""
+        if self._announce is not None:
+            self._announce(trainer)
+        self.adopt(trainer)
+        if note is not None:
+            trainer.events.publish(Note(note))
+        trainer.start()
 
     def start(self, game: str, assignments: dict | list, *,
               generations: int | None = None, seed: int | None = None) -> dict:
@@ -691,22 +779,39 @@ class Lab:
         from ..trainer import Trainer
 
         with self._lock:
-            if self._live is not None:
-                return {"problems": [f"{self._live.run_id} is still training; stop it first"]}
+            if self._closing:
+                return {"problems": ["the dashboard is shutting down"]}
+            busy = [*self._live, *self._waiting]
+            if len(busy) >= self.budget.total:
+                return {"problems": [self._full(busy)]}
             # A seed is always recorded, so any run started here can be repeated.
             seed = secrets.randbelow(2**31) if seed is None else seed
             try:
                 trainer = Trainer(
                     config, run_id=self._new_id(), seed=seed, events=EventBus(),
-                    max_generations=generations,
+                    max_generations=generations, budget=self.budget,
                 )
             except (OSError, ValueError) as error:
                 return {"problems": [f"{type(error).__name__}: {error}"]}
-            if self._announce is not None:
-                self._announce(trainer)
-            self.adopt(trainer)
-            trainer.start()
+            lock = jobs.JobLock(trainer.run_dir)
+            try:
+                # The directory is new, so nothing else holds its lock.
+                lock.acquire()
+                jobs.begin(trainer.run_dir, generations)
+            except OSError as error:
+                lock.release()
+                return {"problems": [f"{type(error).__name__}: {error}"]}
+            self._locks[trainer.run_id] = lock
+            self._launch(trainer)
         return {"ok": True, "run": trainer.run_id, "seed": seed}
+
+    def _full(self, busy: list[str]) -> str:
+        total = self.budget.total
+        if total > 1:
+            return (f"the dashboard trains {total} runs at once, one on each of its workers, "
+                    f"and has {len(busy)}; stop one first")
+        doing = "is still training" if busy[0] in self._live else "is waiting to carry on"
+        return f"{busy[0]} {doing}, and the dashboard has one worker; stop it first"
 
     def _new_id(self) -> str:
         from ..trainer import new_run_id
@@ -719,12 +824,136 @@ class Lab:
         raise AssertionError("unreachable")
 
     def stop(self, run_id: str | None) -> dict:
-        """End the live run after the generation in progress."""
-        live = self.live
-        if live is None or (run_id and run_id != live.run_id):
-            return {"error": "that run is not training here", "run": run_id}
+        """End a run training here after its generation, or keep a waiting one from starting."""
+        with self._lock:
+            if run_id in self._waiting:
+                del self._waiting[run_id]
+                self._write_job(run_id, state="stopped")
+                self._locks.pop(run_id).release()
+                return {"ok": True, "run": run_id}
+            live = self.training(run_id)
+            if live is None:
+                return {"error": "that run is not training here", "run": run_id}
+            self._write_job(live.run_id, state="stopped")
         live.trainer.request_stop()
         return {"ok": True, "run": live.run_id}
+
+    # ------------------------------------------------------------------ carrying on
+
+    def carry_on(self) -> list[dict]:
+        """Carry on every run a restart cut off, as far as the workers go, and queue the rest.
+
+        A run carries on from its newest checkpoint, or from its seed when it
+        had none, and plays on as it would have had it never stopped. One that
+        another dashboard is training is left to it. Says what became of each.
+        """
+        if not self.can_start:
+            return []
+        outcomes = []
+        for run_dir in jobs.unfinished(self.runs_dir):
+            name = run_dir.name
+            lock = jobs.JobLock(run_dir)
+            with self._lock:
+                if self._closing:
+                    break
+                try:
+                    if name in self._locks or not lock.acquire():
+                        continue
+                except OSError:
+                    continue
+                self._locks[name] = lock
+                try:
+                    plan = self._plan(run_dir)
+                except Exception as error:  # reported, and the run is left failed
+                    outcomes.append(self._fail(name, error))
+                    continue
+                if len(self._live) < self.budget.total:
+                    outcomes.append(self._carry(plan))
+                else:
+                    self._waiting[name] = plan
+                    outcomes.append(
+                        {"run": name, "state": "waiting", "generation": plan.generation}
+                    )
+        return outcomes
+
+    def _plan(self, run_dir: Path) -> _Waiting:
+        manifest = _read_json(run_dir / "run.json")
+        if manifest is None:
+            raise ValueError("its run.json cannot be read")
+        found = checkpoint.list_checkpoints(run_dir / "checkpoints")
+        newest = found[-1] if found else None
+        seed = manifest.get("seed")
+        if newest is None and not _whole(seed):
+            raise ValueError("it has no checkpoint, and no seed to start it again from")
+        return _Waiting(
+            run_dir=run_dir,
+            config=self._recorded_config(manifest),
+            resume_from=None if newest is None else newest.path,
+            seed=None if newest is not None else seed,
+            generations=(jobs.read(run_dir) or {}).get("generations"),
+            generation=0 if newest is None else newest.generation,
+        )
+
+    def _recorded_config(self, manifest: dict) -> Config:
+        """The configuration a run recorded, under this dashboard's own sections."""
+        recorded = manifest.get("config")
+        if not isinstance(recorded, dict):
+            raise ValueError("its run.json records no configuration")
+        game = str(recorded.get("game", "snake"))
+        sections = {
+            name: getattr(self.config, name) if name in LAB_SECTIONS
+            else load_settings(type(getattr(self.config, name)), recorded.get(name), strict=False)
+            for name in SECTIONS
+        }
+        # Settings added since the run was recorded take their defaults.
+        return dataclasses.replace(
+            self.config,
+            game=game,
+            settings=load_settings(
+                games.get(game).Settings, checkpoint.saved_settings({}, recorded), strict=False
+            ),
+            **sections,
+        )
+
+    def _carry(self, plan: _Waiting) -> dict:
+        from ..trainer import Trainer
+
+        name = plan.run_dir.name
+        try:
+            trainer = Trainer(
+                plan.config, run_id=name, seed=plan.seed, resume_from=plan.resume_from,
+                events=EventBus(), max_generations=plan.generations, budget=self.budget,
+                carry_on=True,
+            )
+            jobs.restarted(plan.run_dir, plan.generation)
+        except Exception as error:  # reported, and the run is left failed
+            return self._fail(name, error)
+        if plan.resume_from is None:
+            note = "started again from its seed, as it was cut off before its first checkpoint"
+        else:
+            note = (f"carried on from generation {plan.generation}, "
+                    "where its newest checkpoint left it")
+        self._launch(trainer, note)
+        return {"run": name, "state": "carried", "generation": plan.generation}
+
+    def _fail(self, name: str, error: Exception) -> dict:
+        """Mark a run that cannot be carried on as failed, and let it go."""
+        message = f"{type(error).__name__}: {error}"
+        with self._lock:
+            self._write_job(name, state="failed", error=message)
+            lock = self._locks.pop(name, None)
+        if lock is not None:
+            lock.release()
+        return {"run": name, "state": "failed", "error": message}
+
+    def _next(self) -> None:
+        """Carry on the runs waiting, as far as the workers that came free go."""
+        while True:
+            with self._lock:
+                if self._closing or not self._waiting or len(self._live) >= self.budget.total:
+                    return
+                _, plan = self._waiting.popitem(last=False)
+                self._carry(plan)
 
     def _names(self) -> list[str]:
         """Every run in the runs directory, newest first."""
@@ -737,15 +966,16 @@ class Lab:
         return [name for _, name in sorted(found, reverse=True)]
 
     def run(self, name: str | None = None) -> RunView | None:
-        """The run called `name`; without one, the live run or else the newest."""
-        live = self.live
+        """The run called `name`; without one, the newest run training here or else the newest."""
         if not name:
-            if live is not None:
-                return live
+            live = self.live
+            if live:
+                return live[-1]
             names = self._names()
             return self._saved(names[0]) if names else None
-        if live is not None and live.run_id == name:
-            return live
+        found = self.training(name)
+        if found is not None:
+            return found
         if not _RUN_NAME.fullmatch(name) or not (self.runs_dir / name / "run.json").is_file():
             return None
         return self._saved(name)
@@ -768,12 +998,15 @@ class Lab:
 
     def runs(self) -> list[dict]:
         """A line for every run, newest first."""
-        live = self.live
+        with self._lock:
+            live = dict(self._live)
+            waiting = set(self._waiting)
         rows = []
         now = time.time()
         for name in self._names():
-            if live is not None and name == live.run_id:
-                rows.append({**live.entry(), "updated_seconds_ago": 0.0, "ended_here": False})
+            if name in live:
+                rows.append({**live[name].entry(), "updated_seconds_ago": 0.0,
+                             "ended_here": False, "waiting": False})
                 continue
             stamp = _stamp(self.runs_dir / name)
             with self._lock:
@@ -786,6 +1019,7 @@ class Lab:
             updated = entry.get("updated_at")
             entry["updated_seconds_ago"] = None if updated is None else round(now - updated, 1)
             entry["ended_here"] = self._still_ended(name, updated)
+            entry["waiting"] = name in waiting
             rows.append(entry)
         return rows
 
@@ -836,15 +1070,16 @@ class Lab:
                 raise _Cancelled
             job.stage, job.played, job.games = stage, played, total
 
+        # The choice takes its share of the workers like a run, and the runs
+        # training here give theirs up at their next generation.
+        key = f"choice-{job.id}"
+        workers = self.budget.join(key, self.config.evolution.workers)
         try:
             candidates = view.candidates()
             if not candidates:
                 raise ValueError("the run holds no genome to choose from")
             job.candidates = len(candidates)
-            choice = choose_by_average(
-                candidates, view.context(), resolve_workers(self.config.evolution.workers),
-                progress=progress,
-            )
+            choice = choose_by_average(candidates, view.context(), workers, progress=progress)
             generation = view.export_generation()
             report = view.report(generation, choice.genome, self.destination(view))
             report["pick"] = "average"
@@ -858,6 +1093,7 @@ class Lab:
             job.error = f"{type(error).__name__}: {error}"
             job.state = "failed"
         finally:
+            self.budget.leave(key)
             job.finished = time.time()
 
     def job(self, job_id: str | None) -> dict:
@@ -905,11 +1141,29 @@ class Lab:
             archive_dir=self.exports_dir / "archive",
         )
 
-    def close(self, timeout: float | None = 10.0) -> None:
-        """Cancel a running choice and stop the live run, waiting up to `timeout` for it."""
+    def winding_down(self) -> list[Trainer]:
+        """Take on no more runs, and return the trainers of those training here to stop."""
         with self._lock:
-            job, live = self._job, self._live
+            self._closing = True
+            return [run.trainer for run in self._live.values()]
+
+    def close(self, timeout: float | None = 10.0) -> None:
+        """Cancel a running choice and stop every run here, waiting up to `timeout` for each.
+
+        The runs stop after their generations, together, and their jobs are left
+        training, as are those of the runs still waiting. The next dashboard on
+        the runs directory carries them all on.
+        """
+        with self._lock:
+            self._closing = True
+            job, live = self._job, list(self._live.values())
+            locks = [self._locks.pop(name) for name in self._waiting]
+            self._waiting.clear()
         if job is not None:
             job.cancel.set()
-        if live is not None:
-            self.retire(live, timeout)
+        for run in live:
+            run.trainer.request_stop()
+        for run in live:
+            self.retire(run, timeout)
+        for lock in locks:
+            lock.release()

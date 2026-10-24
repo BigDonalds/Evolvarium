@@ -60,7 +60,7 @@ class CheckpointMismatch(RuntimeError):
     """Raised when a checkpoint cannot be loaded into the current setup."""
 
 
-def _replace_with_retry(source: Path, target: Path, attempts: int = 5) -> None:
+def replace_with_retry(source: Path, target: Path, attempts: int = 5) -> None:
     """Move `source` onto `target`, tolerating a transient Windows lock.
 
     Indexers and virus scanners open newly written files briefly, which surfaces
@@ -161,7 +161,7 @@ def save(population: Population, path: Path) -> CheckpointInfo:
         # object to keep the staging name exactly as written.
         with staging.open("wb") as handle:
             np.savez_compressed(handle, **arrays)
-        _replace_with_retry(staging, path)
+        replace_with_retry(staging, path)
 
     return CheckpointInfo(
         path=path,

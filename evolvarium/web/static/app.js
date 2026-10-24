@@ -3,15 +3,17 @@
    comes from the run's scene, and every number from the run's own records.
 
    Runs: the page shows one run at a time, picked from every run in the runs
-   directory. The one training in the server's process is live; the rest are
+   directory. Those training in the server's process are live; the rest are
    read back from disk, finished or training in another process. A dashboard
-   opened with `serve` can also start runs, one at a time.
+   opened with `serve` can also start runs, as many at once as it has workers,
+   and carries on the runs a restart cut off, the ones it has no worker for yet
+   waiting their turn.
 
-   Presence: the live run holds at a generation boundary while this page shows
+   Presence: a live run holds at a generation boundary while this page shows
    it, so a generation cannot be replaced before it has been looked at. That
-   hold is a lease, refreshed by the heartbeat below. Only a page showing the
-   live run sends them, so closing the tab or showing another run lets the
-   trainer resume on its own rather than wait forever.
+   hold is a lease, refreshed by the heartbeat below. Only a page showing a
+   live run sends them, and only for that run, so closing the tab or showing
+   another run lets the trainer resume on its own rather than wait forever.
 
    Pinning: selecting a generation detaches the view from the live edge. New
    generations keep arriving and the scrubber range grows, but the displayed
@@ -35,7 +37,7 @@ const TICK_MS = 90;
 
 const state = {
   runs: [],              // every run, newest first
-  liveRun: null,         // the run training in the server's process
+  liveRuns: [],          // the runs training in the server's process, oldest first
   canStart: false,
   defaultGame: null,
   run: null,             // the run shown
@@ -171,9 +173,10 @@ function escape(text) {
 
 const recent = (seconds) => seconds != null && seconds < RECENT_SECONDS;
 // A saved run that another process may still be training. One that ended in
-// this dashboard is known to be done.
+// this dashboard is known to be done, and one waiting for a worker is not moving.
 const writing = (run) =>
-  run != null && !run.live && !run.ended_here && recent(run.updated_seconds_ago);
+  run != null && !run.live && !run.ended_here && !run.waiting && recent(run.updated_seconds_ago);
+const failed = (run) => run != null && run.job_state === "failed";
 const lowerIsBetter = (direction) => direction === "lower";
 const betterWord = (direction) => (lowerIsBetter(direction) ? "lower is better" : "higher is better");
 
@@ -188,7 +191,7 @@ async function loadRuns() {
     return;
   }
   state.runs = data.runs || [];
-  state.liveRun = data.live;
+  state.liveRuns = data.live || [];
   state.canStart = Boolean(data.can_start);
   state.defaultGame = data.game;
   $("btn-new").hidden = !state.canStart;
@@ -199,9 +202,9 @@ async function loadRuns() {
     state.wanted = null;
     if (known.has(wanted)) show(wanted, true);
   }
-  // Until a run is picked the page shows the live one, or else the newest.
+  // Until a run is picked the page shows the newest live one, or else the newest.
   if (!state.chosen || !known.has(state.run)) {
-    const pick = state.liveRun || (state.runs.length ? state.runs[0].run_id : null);
+    const pick = state.liveRuns.at(-1) || (state.runs.length ? state.runs[0].run_id : null);
     show(pick, false);
   }
   renderRunPicker();
@@ -211,8 +214,10 @@ async function loadRuns() {
 
 function runNote(run) {
   const where = run.live ? "training here"
-    : writing(run) ? "recently written"
-      : `${fmt.int(run.generations)} gens`;
+    : run.waiting ? "waiting for a worker"
+      : failed(run) ? "failed"
+        : writing(run) ? "recently written"
+          : `${fmt.int(run.generations)} gens`;
   return `${run.game} · ${where}`;
 }
 
@@ -347,7 +352,11 @@ function renderStatus(status) {
   if (status.problem) {
     setStateChip("problem", "cannot load");
   } else if (!status.live) {
-    if (writing(status)) {
+    if (status.waiting) {
+      setStateChip("held", "waiting for a worker");
+    } else if (failed(status)) {
+      setStateChip("problem", "failed");
+    } else if (writing(status)) {
       setStateChip("elsewhere", `written ${fmt.ago(status.updated_seconds_ago)}`);
     } else {
       setStateChip("offline", status.ended_here ? "ended" : "saved run");
@@ -366,20 +375,15 @@ function renderControl(status) {
   const active = Boolean(status.live && status.running);
   for (const id of ["btn-continue", "btn-continue-5", "btn-hold", "btn-free"]) $(id).disabled = !active;
   $("btn-hold").setAttribute("aria-pressed", String(Boolean(gate.hold_enabled)));
-  $("btn-stop").hidden = !active;
-  if (!active) disarmStop();
+  // A run waiting for a worker can be stopped before it carries on.
+  $("btn-stop").hidden = !active && !status.waiting;
+  if (!active && !status.waiting) disarmStop();
   $("control-hint").hidden = !status.live;
 
   const hold = $("hold-status");
   hold.className = "hold-status";
   if (!status.live) {
-    hold.textContent = writing(status)
-      ? `This run was written to ${fmt.ago(status.updated_seconds_ago)}. If another process ` +
-        "is training it, new generations appear here as they are saved."
-      : status.ended_here
-        ? "This run ended here and every generation is saved. It can still be replayed, " +
-          "compared and exported."
-        : "This run is not training. Its generations can still be replayed, compared and exported.";
+    hold.textContent = savedNote(status);
   } else if (gate.holding) {
     hold.className = "hold-status held";
     hold.textContent =
@@ -394,6 +398,25 @@ function renderControl(status) {
           : "Running. Will pause at the next generation boundary.")
       : "Running freely. Generations will advance without waiting.";
   }
+}
+
+function savedNote(status) {
+  if (status.waiting) {
+    return "A restart cut this run off. It carries on from its newest checkpoint as soon " +
+      "as a worker comes free, or stop it to leave it where it is.";
+  }
+  if (failed(status)) {
+    return `This run failed${status.job_error ? `: ${status.job_error}.` : "."} ` +
+      "The generations it saved can still be replayed, compared and exported.";
+  }
+  if (writing(status)) {
+    return `This run was written to ${fmt.ago(status.updated_seconds_ago)}. If another process ` +
+      "is training it, new generations appear here as they are saved.";
+  }
+  return status.ended_here
+    ? "This run ended here and every generation is saved. It can still be replayed, " +
+      "compared and exported."
+    : "This run is not training. Its generations can still be replayed, compared and exported.";
 }
 
 let stopTimer = null;
@@ -411,6 +434,7 @@ function stopRun() {
   postJSON("/api/runs/stop", { run: state.run })
     .then((result) => {
       if (result.error) toast(result.error, "bad");
+      else if (state.status && state.status.waiting) toast(`${result.run} will not be carried on`);
       else toast(`${result.run} stops after the generation in progress`);
       pollStatus();
     })
@@ -2165,8 +2189,8 @@ function heartbeat() {
   // Presence lease. The trainer holds only while these keep arriving, so a
   // closed tab, or one showing another run, releases the hold instead of
   // stalling the run indefinitely.
-  if (!state.run || state.run !== state.liveRun) return;
-  postJSON("/api/heartbeat").catch(() => {});
+  if (!state.run || !state.liveRuns.includes(state.run)) return;
+  postJSON("/api/heartbeat", { run: state.run }).catch(() => {});
 }
 
 function init() {

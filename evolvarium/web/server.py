@@ -2,8 +2,9 @@
 
 Standard library only, so the dashboard adds no dependencies to the project.
 
-Every GET about a run takes `run=ID` and otherwise answers for the run training
-here, or the newest run when none is.
+Every GET about a run takes `run=ID` and otherwise answers for the newest run
+training here, or the newest run when none is. The POSTs that steer a run take
+its id as `run`, and can leave it out only while one run is training here.
 
 Endpoints
     GET  /                            dashboard page
@@ -11,9 +12,9 @@ Endpoints
     GET  /api/games                   the games a run can be started on
     GET  /api/settings?game=NAME      the settings a new run of that game starts from
     POST /api/runs/start              start a run: game, settings, generations, seed
-    POST /api/runs/stop               end the live run after its generation
+    POST /api/runs/stop               end a run here after its generation
     GET  /api/compare?runs=A,B        several runs' curves and totals side by side
-    GET  /api/status                  a run's status, and the gate's for the live run
+    GET  /api/status                  a run's status, and its gate's if it trains here
     GET  /api/events                  live training events (server-sent events)
     GET  /api/curve                   per-generation series for the charts
     GET  /api/generation?n=N          one generation's agents and replays
@@ -143,10 +144,9 @@ class DashboardServer:
         return view
 
     def runs(self) -> dict:
-        live = self.lab.live
         return {
             "runs": self.lab.runs(),
-            "live": None if live is None else live.run_id,
+            "live": [run.run_id for run in self.lab.live],
             "can_start": self.lab.can_start,
             "game": self.lab.config.game,
         }
@@ -177,11 +177,15 @@ class DashboardServer:
         status = view.status()
         status["can_start"] = self.lab.can_start
         status["ended_here"] = self.lab.ended_here(view)
+        job = view.job()
+        status["job_state"] = job.get("state")
+        status["job_error"] = job.get("error")
+        status["waiting"] = view.run_id in self.lab.waiting
         return status
 
     def control(self, payload: dict) -> dict:
-        live = self.lab.live
-        if live is None or payload.get("run") not in (None, live.run_id):
+        live = self.lab.training(payload.get("run"))
+        if live is None:
             return {"error": "that run is not training here"}
         action = str(payload.get("action", ""))
         gate = live.trainer.gate
@@ -196,9 +200,9 @@ class DashboardServer:
             return {"error": f"unknown action {action!r}"}
         return {"ok": True, "gate": gate.state().to_dict()}
 
-    def heartbeat(self) -> dict:
-        """Tell the live run someone is watching; past runs have no gate."""
-        live = self.lab.live
+    def heartbeat(self, payload: dict) -> dict:
+        """Tell the run being watched that someone is; past runs have no gate."""
+        live = self.lab.training(payload.get("run"))
         if live is None:
             return {"ok": True, "gate": None}
         gate = live.trainer.gate
@@ -364,7 +368,7 @@ def _make_handler(server: DashboardServer):
 
             try:
                 if route == "/api/heartbeat":
-                    self._json(server.heartbeat())
+                    self._json(server.heartbeat(payload))
                 elif route == "/api/control":
                     self._json(server.control(payload))
                 elif route == "/api/runs/start":

@@ -137,15 +137,34 @@ class HistoryStore:
 
             self._evict_replays()
 
+    def truncate(self, generation: int) -> int:
+        """Forget every generation from `generation` on, and return how many went.
+
+        A run carried on from a checkpoint plays the generations after it again,
+        and each is written afresh as it comes round.
+        """
+        with self._lock:
+            kept = [s for s in self._summaries if s["generation"] < generation]
+            dropped = len(self._summaries) - len(kept)
+            if dropped:
+                text = "".join(json.dumps(s, separators=(",", ":")) + "\n" for s in kept)
+                partial = self.summary_path.with_name(self.summary_path.name + ".partial")
+                partial.write_text(text, encoding="utf-8")
+                partial.replace(self.summary_path)
+            for path in self.replay_dir.glob("gen_*.json.gz"):
+                if _generation_of(path) >= generation:
+                    path.unlink(missing_ok=True)
+            self._memory.clear()
+            self._summaries = kept
+            self._pinned = {int(e["generation"]) for e in kept if e.get("record")}
+        return dropped
+
     def _evict_replays(self) -> None:
         keep = self.config.replay_retention
         if keep <= 0:
             return
         files = sorted(self.replay_dir.glob("gen_*.json.gz"))
-        removable = [
-            p for p in files
-            if int(p.stem.split("_")[1].split(".")[0]) not in self._pinned
-        ]
+        removable = [p for p in files if _generation_of(p) not in self._pinned]
         excess = len(files) - keep
         for path in removable[: max(excess, 0)]:
             try:
@@ -181,10 +200,7 @@ class HistoryStore:
     def available(self) -> list[int]:
         """Generations whose replay can still be loaded."""
         with self._lock:
-            on_disk = {
-                int(p.stem.split("_")[1].split(".")[0])
-                for p in self.replay_dir.glob("gen_*.json.gz")
-            }
+            on_disk = {_generation_of(p) for p in self.replay_dir.glob("gen_*.json.gz")}
             return sorted(on_disk | set(self._memory))
 
     def get(self, generation: int) -> GenerationRecord | None:
@@ -225,6 +241,11 @@ class HistoryStore:
             if not self._summaries:
                 return (0, 0)
             return (self._summaries[0]["generation"], self._summaries[-1]["generation"])
+
+
+def _generation_of(replay: Path) -> int:
+    """The generation in a replay's name, gen_000042.json.gz."""
+    return int(replay.stem.split("_")[1].split(".")[0])
 
 
 def read_summaries(path: Path) -> list[dict]:

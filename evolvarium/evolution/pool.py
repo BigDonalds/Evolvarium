@@ -8,11 +8,16 @@ or two; paying that per generation would cancel most of the gain.
 and the trainer itself still need to run, and measured speedup from six workers
 to eight was 4.89x against 5.33x, so the last core buys very little and costs
 responsiveness.
+
+`WorkerBudget` divides those cores between the runs one dashboard trains at
+once. Results never depend on how many workers play them, so a run can be given
+more or fewer between generations without changing what it evolves.
 """
 
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -29,14 +34,73 @@ def resolve_workers(requested: int) -> int:
     return max(1, (os.cpu_count() or 2) - 1)
 
 
-class EvaluationPool:
-    """Process pool that scores genomes, or a no-op wrapper when serial."""
+class WorkerBudget:
+    """A fixed number of workers shared fairly between the jobs using them.
 
-    def __init__(self, ctx: EvalContext, workers: int):
+    A job that asks for fewer than an even split gets what it asks for, and the
+    rest is split evenly between the others, the earliest to join taking any
+    worker left over. Every job gets at least one, so a budget with more jobs
+    than workers runs some of them on the same core.
+    """
+
+    def __init__(self, total: int):
+        self.total = max(1, total)
+        self._wanted: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def join(self, key: str, wanted: int = 0) -> int:
+        """Add a job wanting `wanted` workers, 0 for as many as it can get, and return its share."""
+        with self._lock:
+            self._wanted.setdefault(key, max(0, wanted))
+            return self._shares()[key]
+
+    def leave(self, key: str) -> None:
+        with self._lock:
+            self._wanted.pop(key, None)
+
+    def share(self, key: str) -> int:
+        """The workers `key` may use now, which changes as other jobs join and leave."""
+        with self._lock:
+            return self._shares().get(key, 1)
+
+    @property
+    def jobs(self) -> int:
+        with self._lock:
+            return len(self._wanted)
+
+    def _shares(self) -> dict[str, int]:
+        shares: dict[str, int] = {}
+        left = self.total
+        open_ = list(self._wanted)
+        while open_:
+            fair = left // len(open_)
+            capped = [key for key in open_ if 0 < self._wanted[key] <= fair]
+            if not capped:
+                break
+            for key in capped:
+                shares[key] = self._wanted[key]
+                left -= self._wanted[key]
+            open_ = [key for key in open_ if key not in shares]
+        if open_:
+            base, extra = divmod(left, len(open_))
+            for place, key in enumerate(open_):
+                shares[key] = max(1, base + (1 if place < extra else 0))
+        return shares
+
+
+class EvaluationPool:
+    """Process pool that scores genomes, or a no-op wrapper when serial.
+
+    `own_process` puts even a single worker in a process of its own. Several
+    trainers in one interpreter would otherwise queue on its lock, however many
+    cores are free.
+    """
+
+    def __init__(self, ctx: EvalContext, workers: int, *, own_process: bool = False):
         self.workers = workers
         self._ctx = ctx
         self._executor = None
-        if workers > 1:
+        if workers > 1 or own_process:
             from concurrent.futures import ProcessPoolExecutor
 
             self._executor = ProcessPoolExecutor(
@@ -87,9 +151,10 @@ class EvaluationPool:
             played()
         return collected
 
-    def close(self) -> None:
+    def close(self, wait: bool = False) -> None:
+        """Shut the workers down, waiting for them to exit when `wait` is set."""
         if self._executor is not None:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor.shutdown(wait=wait, cancel_futures=True)
             self._executor = None
 
     def __enter__(self) -> EvaluationPool:

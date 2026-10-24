@@ -10,6 +10,91 @@ directly.
 
 ---
 
+## Several runs at once - shared workers, and runs that outlive a restart
+
+`serve` trained one run at a time, so starting a second meant stopping the
+first. A run cut off by a restart, a crash or a closed terminal stayed where it
+fell. Getting it going again meant finding its newest checkpoint and resuming
+from it by hand, which started a new run and left the history split across two
+directories.
+
+**Sharing the workers.** A dashboard now trains as many runs at once as it has
+workers. `WorkerBudget` in `pool.py` splits the workers evenly between the runs,
+with any worker left over going to the run that started first, and a run that
+asked for fewer than an even split keeps to what it asked for. A run takes up
+its share between generations. When one run ends, the others grow into its
+workers from their next generation, and the console and the page both say so.
+None of this changes what a run evolves, since results never depend on the
+number of workers. A run that trains on 2 workers, drops to 1 and gets 2 back
+ends with the same history and the same population as one that kept 2 the
+whole way. A third run on a dashboard with two workers is refused instead of
+being squeezed onto cores that are already busy. Once the workers are shared,
+even a run with a single worker scores in a process of its own, because two
+runs scoring inside one interpreter take turns on it however many cores are
+free.
+
+**Jobs.** Every run started from the page writes a `job.json` beside its
+history, with the generation it stops at, if it has one, and whether it is
+training, stopped, finished or failed. Stop marks the run stopped as soon as it
+is clicked, a run that reaches its limit is finished, and one that raises is
+failed with the error. A run whose job still says training while nothing trains
+it is one that got cut off. While a run trains, its process holds `job.lock`
+through the operating system's file locking, and the lock goes with the process
+however that process ends. A lock that can be taken therefore means nothing is
+training the run, and two dashboards on one runs directory can never both carry
+the same run on.
+
+**Carrying on.** When `serve` starts, it looks for the runs left training,
+oldest first, and carries each one on in its own directory from its newest
+checkpoint. A run cut off before its first checkpoint starts again from its
+seed. The generations after the checkpoint are dropped from the history and the
+replays and played again, and because a checkpoint keeps the random state they
+come out exactly as they did the first time. A run carried on from generation 2
+and trained to 5 has the same history and population as one trained straight
+to 5. Each restart goes into the job with its time and the generation it picked
+up from. If there are more runs to carry on than workers, the rest wait in the
+order they started and go as workers come free. The page lists them as waiting
+for a worker, and stopping one there leaves it where it is. A run that can't be
+carried on, because its `run.json` is unreadable or it has neither a checkpoint
+nor a seed, is marked failed with the reason. Ctrl+C stops the runs without
+marking them stopped, so the next `serve` on the same runs carries them on.
+
+**The page and the console.** The run list marks each run as training here,
+waiting for a worker or failed, and the page opens on the newest run training
+here. A heartbeat names the run on screen, so only that run holds at its
+generation boundary and the others keep training. With more than one worker,
+every console line from a run starts with its number, `[1]`, `[2]` and so on,
+so the runs can be told apart as their lines mix.
+
+**Checking it.** `tests/test_jobs.py` is new, with 17 tests. They cover the
+split of workers, a run asking for fewer, more runs than workers, and a run
+whose share changes part way matching one whose share never did. They check that
+a cut-off history is trimmed, that a job is written and read back, that only the
+runs still training are found, oldest first, and that the lock has one holder at
+a time and comes free when the process holding it is killed. A run carried on
+from a checkpoint and one started again from its seed both match a run that was
+never stopped. A run with nothing to carry on from is failed. A run another
+dashboard holds is left to it and carried on once it is let go, and after this
+dashboard closes the next one carries it on again, with both restarts in its
+job. With one worker, runs wait their turn in start order and stopping the one
+training hands the worker to the next. With two, two runs train at once, a third
+is refused, and closing the dashboard leaves the runs to be carried on next
+time. `tests/test_server.py` was updated for the list of live runs, the
+heartbeat naming its run, and the job state a run ends with. The new tests take
+about 8 s on their own, and the whole suite, 453 passed and 2 skipped, takes
+about 80 s.
+
+In the browser, on a dashboard with two workers, two Snake runs with populations
+of 60 trained side by side and a third was refused. While one was on screen it
+held at generation 1 and the other kept going. Stopping the held one from the
+page handed its worker to the other, which said it was training on 2 workers
+from generation 10. The server process was then ended at generation 12. On the
+next start that run carried on from its newest checkpoint on both workers, with
+the restart in its job, and the stopped run stayed stopped. The whole check took
+about four minutes.
+
+---
+
 ## Crossover by unit - `layer_uniform` does what it says
 
 `evolution.crossover_method` has four choices. The fourth, `layer_uniform`, was

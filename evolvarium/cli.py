@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import itertools
 import json
 import sys
 import time
@@ -130,22 +131,27 @@ def _banner(reporter: ConsoleReporter, trainer: Trainer, url: str) -> None:
     )
 
 
-def _wind_down(trainer: Trainer, drop) -> None:
-    """Finish the generation in progress after a Ctrl+C, or `drop()` it after a second."""
+def _wind_down(trainers: list[Trainer], drop) -> None:
+    """Finish the generations in progress after a Ctrl+C, or `drop()` them after a second."""
+    if not trainers:
+        return
     print()
-    trainer.events.publish(Note(
-        "interrupted, finishing the current generation (Ctrl+C again to drop it)"
-    ))
-    trainer.request_stop()
+    for trainer in trainers:
+        trainer.events.publish(Note(
+            "interrupted, finishing the current generation (Ctrl+C again to drop it)"
+        ))
+        trainer.request_stop()
     try:
-        trainer.join()
+        for trainer in trainers:
+            trainer.join()
     except KeyboardInterrupt:
         drop()
-        # The trainer ends once the workers finish the genomes they are
-        # scoring. A third Ctrl+C stops waiting for it here, though the
-        # process still lets the workers finish as it exits.
+        # A trainer ends once its workers finish the genomes they are scoring.
+        # A third Ctrl+C stops waiting for them here, though the process still
+        # lets the workers finish as it exits.
         with contextlib.suppress(KeyboardInterrupt):
-            trainer.join()
+            for trainer in trainers:
+                trainer.join()
 
 
 def _latest_checkpoint(runs_dir: Path) -> Path | None:
@@ -200,7 +206,7 @@ def command_train(args: argparse.Namespace) -> int:
     try:
         trainer.join()
     except KeyboardInterrupt:
-        _wind_down(trainer, lambda: trainer.stop(timeout=0))
+        _wind_down([trainer], lambda: trainer.stop(timeout=0))
 
     trainer.stop()
     lab.close()
@@ -224,9 +230,13 @@ def command_serve(args: argparse.Namespace) -> int:
         return _refused("serve", error)
 
     server: DashboardServer | None = None
+    numbers = itertools.count(1)
 
     def announce(trainer: Trainer) -> None:
-        reporter = ConsoleReporter(every=args.report_every)
+        # With more than one worker, runs train side by side, and each run's
+        # lines carry its number.
+        tag = str(next(numbers)) if lab.budget.total > 1 else None
+        reporter = ConsoleReporter(every=args.report_every, tag=tag)
         reporter.attach(trainer.events)
         _banner(reporter, trainer, server.url)
 
@@ -234,20 +244,32 @@ def command_serve(args: argparse.Namespace) -> int:
     server = DashboardServer(lab, config.server.host, config.server.port)
     if not server.start():
         return 1
+    total = lab.budget.total
     print(f"  dashboard     {server.url}")
     print(f"  runs          {config.paths.runs_dir}")
-    print("  runs started on the page train here; Ctrl+C ends the one training and quits")
+    print(f"  workers       {total}, " + (
+        "so one run trains at a time" if total == 1 else f"shared by up to {total} runs at once"
+    ))
+    print("  runs started on the page train here. Ctrl+C stops them and quits, and the")
+    print("  next serve on the same runs carries them on.")
     print()
     if args.open:
         webbrowser.open(server.url)
+
+    # Carried on after the server starts, so the page hears them from the first
+    # generation.
+    for outcome in lab.carry_on():
+        if outcome["state"] == "waiting":
+            print(f"  {outcome['run']} waits for a worker, "
+                  f"to carry on from generation {outcome['generation']}")
+        elif outcome["state"] == "failed":
+            print(f"  cannot carry {outcome['run']} on: {outcome['error']}")
 
     try:
         while True:
             time.sleep(0.5)
     except KeyboardInterrupt:
-        live = lab.live
-        if live is not None:
-            _wind_down(live.trainer, lambda: lab.close(timeout=0))
+        _wind_down(lab.winding_down(), lambda: lab.close(timeout=0))
 
     lab.close()
     server.stop()
