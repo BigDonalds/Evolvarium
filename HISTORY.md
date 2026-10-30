@@ -10,6 +10,133 @@ directly.
 
 ---
 
+## Limits on a game's code, and games broken on purpose
+
+The engine trusted a game's code completely. A step that never returned hung
+the run for good, and so did an episode with nothing to end it. A worker that
+died, because the game exited the interpreter or the operating system ended it,
+broke the whole process pool. The run then stopped with `BrokenProcessPool`,
+which says a process died and nothing about the genome or the episode it was
+playing. An exception from the game came back as the game raised it, saying
+what went wrong but not on which call, step or seed.
+
+**Time limits.** A new section, `limits`, holds `step_seconds` and
+`episode_seconds`, 10 s and 120 s by default, and both must be above zero. The
+clock is checked after every step. An episode that runs over either limit is
+played once more, and if it finishes in time the run goes on with a note saying
+which step ran over and by how much. A busy machine can hold up a step that is
+fine, and an episode is a function of its seed, so the second go scores exactly
+what the first would have. Running over twice ends the job with the step and
+seed it happened on. An episode still going after `episode_seconds` ends it the
+same way, with a hint that a game whose episodes can go on forever needs a rule
+that ends one after so many steps.
+
+**Faults that say where.** An exception from the game's code is raised again as
+a `GameFault` naming the call it came from, the step and seed, and the file and
+line it was raised on, with the original as its cause:
+
+```
+Trouble.step raised ValueError: no move called sideways on step 3 of the episode with seed 7 (test_guards.py, line 62)
+```
+
+The engine's own calls made on the game's behalf are named for what they do, so
+too many inputs from `observe` reads as "reading Trouble.observe's output as
+inputs raised ValueError".
+
+**The pool.** `EvaluationPool` no longer uses `ProcessPoolExecutor`. It starts
+its own workers, each on a pipe of its own, and a worker playing an episode
+reports its seed and step at least once a second, or four times per
+`step_seconds` when that is shorter. A worker that dies, or goes quiet for
+longer than a step is allowed plus that interval and two seconds' slack, is
+ended and replaced, and the genome it was playing is played again on the new
+one. A task is a pure function of the genome, base seed and number of episodes,
+so the result is the one the first worker would have sent. The note says where
+the lost worker was last heard from. Losing a second worker on the same genome
+ends the job with `WorkerLost` and both accounts, as does a place in the pool
+that fails twice in a row between genomes or while starting. A fault or a time
+limit in a worker reads word for word as it would in the trainer's process, and
+a job that ends early closes its pool so nothing is left running. If the pool's
+own process is held up well past the wait it asked for, as when the machine
+sleeps, the workers' silence is counted from when it wakes, so closing a laptop
+mid-run costs no workers. On a dashboard a job ended this way is failed with its
+message, and the server and the other runs carry on.
+
+**Notes.** What a generation got past, an episode played again or a worker
+replaced, goes into its report as notes, and the trainer passes each one on to
+the console and the page as `generation 4: ...`.
+
+**What one worker can't do.** `train` with `evolution.workers=1` plays in the
+trainer's own process, where the clock is only read between steps. A step that
+never returns still hangs it there, and a game that exits the interpreter takes
+the run with it. TODO.md has it.
+
+**Broken games.** `evolvarium/games/broken.py` has each of the three built-in
+games five more times, 15 games in all, with one fault planted in each:
+
+- unscaled: every fourth input is left as it is, and the others are scaled
+  by 30, by 600 and moved up 250, and by 0.002 and moved down to about -3;
+- dead: four inputs that never change, two zeros, a 1 and a -0.5, spread
+  evenly among the real ones;
+- duplicate: three inputs copying others, the last one flipped and doubled;
+- endless: the rules that end an episode after so many steps are lifted,
+  Snake's starvation limit and step cap, cart-pole's step cap and the arena's
+  step and idle caps;
+- unseeded: each episode comes from a generator of the game's own, so the
+  same seed plays a different episode every time.
+
+None is built in, so a run names one in full, such as
+`--game evolvarium.games.broken:DeadInputSnake`, and `VARIANTS` lists them by
+game and fault. Nothing in the engine looks for these faults yet. The games are
+for the checks that will, and for measuring what each fault does to training.
+
+**Checking it.** `tests/test_guards.py` is new, with 11 tests on a game that
+misbehaves on purpose. It raises in `reset` or `step`, sends one input too many,
+runs over a step once or every time, never ends, exits the interpreter once or
+every time, or sleeps for an hour in a step. The tests check the message for a
+fault in each place. A step over its time once is played again with a note,
+twice ends the job, and an endless episode is ended within a few seconds with
+its hint. The trainer passes notes on, and a fault in a worker reads the same as
+one in the trainer's process. A worker that exits is replaced and both genomes
+score what they would on a game with nothing wrong, a genome that kills every
+worker ends the job, and a worker stuck in a step is ended. These take about
+24 s, mostly starting workers. `tests/test_broken_games.py` is new, with 35
+tests taking about 5 s. Every broken game is found by its name, is the game it
+is built on underneath, and passes the checks a run makes before it starts. The
+unscaled, dead and duplicate versions are played in step with their own game on
+the same seed and the same random moves. Each ends when that game does, and its
+inputs differ only where the fault puts them. An unseeded game reset four times
+on one seed plays a different episode each time, where its own game plays the
+same one. The endless games lift only the step caps, and an endless cart-pole
+held upright by a scripted controller is still going at 2,000 steps where the
+built-in one stops at 500. A population trains for two generations on each
+broken cart-pole but the endless one, whose good genomes would play until the
+time limit. A broken game scores the same on two workers as in one process. The
+held-out replay of the model in `models/` still matches its record game for
+game. The whole suite, 501 passed and 2 skipped, took about 195 s, with other
+jobs keeping the machine busy the whole time. The new tests account for about
+30 s of that.
+
+**What it costs.** The clock read and the comparisons around it add about
+0.14 µs to every step, timed on their own. Cart-pole has the shortest steps of
+the three games, so it was timed against the code from before this change: 9,000
+episodes, eight times over with the order switched each round. It was timed on
+processor time, because with the other jobs running the times on the clock swung
+by half from one round to the next. The fastest of the eight came to 9.13 µs a
+step against 9.00 µs, 1.4% slower, which is the 0.14 µs and well inside the
+spread between rounds. Snake's steps take about 350 µs and the arena's about
+100 µs, and five rounds of each showed no cost.
+
+The new pool is faster than the one it replaces. On 4 workers, the same
+generations from the same seed took 0.62 s each on cart-pole against 1.01 s,
+over three rounds of six generations, and 9.97 s each on Snake against 10.55 s,
+over three rounds of three. The new pool was quicker in every round. Early in a
+run a cart-pole genome scores in a few milliseconds, so most of a generation
+goes on handing out tasks and collecting results. The executor passes each task
+through queues fed by threads of its own, where the new pool writes it straight
+to the worker's pipe. The timings took about twelve minutes in all.
+
+---
+
 ## Several runs at once - shared workers, and runs that outlive a restart
 
 `serve` trained one run at a time, so starting a second meant stopping the

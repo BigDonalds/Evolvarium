@@ -181,6 +181,8 @@ def test_choices_are_reported_with_every_other_problem():
      "evolution.population_size must be at least 2, not 1"),
     ((("network.weight_init_scale", "0"),), "network.weight_init_scale must be above 0, not 0.0"),
     ((("history.memory_window", "0"),), "history.memory_window must be at least 1, not 0"),
+    ((("limits.step_seconds", "0"),), "limits.step_seconds must be above 0, not 0.0"),
+    ((("limits.episode_seconds", "-5"),), "limits.episode_seconds must be above 0, not -5.0"),
     ((("server.port", "70000"),), "server.port must be between 1 and 65535, not 70000"),
     ((("server.host", ""),), "server.host is empty"),
 ])

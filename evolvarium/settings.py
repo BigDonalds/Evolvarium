@@ -359,6 +359,8 @@ def _problems(config: Config, unused: dict[str, str]) -> Problems:
     problems.at_least("history.memory_window", history.memory_window, 1)
     for name in ("replay_retention", "replay_steps", "agents_per_generation"):
         problems.at_least(f"history.{name}", getattr(history, name), 0)
+    problems.above("limits.step_seconds", config.limits.step_seconds, 0)
+    problems.above("limits.episode_seconds", config.limits.episode_seconds, 0)
     problems.at_least("checkpoint.save_every", config.checkpoint.save_every, 0)
     if "checkpoint.keep_last" not in unused:
         problems.at_least("checkpoint.keep_last", config.checkpoint.keep_last, 0)

@@ -241,6 +241,8 @@ class Trainer:
         self.events.publish(GenerationStarted(population.generation))
         report = population.run_generation(record=True, pool=self.pool)
         self._last_report = report
+        for note in report.notes:
+            self.events.publish(Note(f"generation {report.generation}: {note}"))
 
         self.events.publish(GenerationEvaluated(report, population.best_ever_genome))
         if report.record:

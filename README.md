@@ -107,6 +107,25 @@ the ones that others leave without effect, and the run uses all three before it
 starts. `tests/test_contract.py` trains one with two agents and a score that is
 better lower.
 
+A game's code plays under two time limits, `limits.step_seconds` for a step and
+`limits.episode_seconds` for a whole episode, 10 s and 120 s by default. An
+episode that runs over is played once more, since a busy machine can hold up a
+step that is fine, and running over again ends the run with the step and seed
+it happened on. An exception from the game ends it the same way, naming the
+call it came from. With more than one worker, a worker that dies or stops
+reporting while it scores is replaced and the genome played again on the new
+one. A second worker lost on the same genome ends that run, and the dashboard
+and any other runs carry on. `train` with `evolution.workers=1` plays the game
+in its own process and can only check the time after a step, so a step that
+never returns hangs it there.
+
+`evolvarium/games/broken.py` has each built-in game five more times, each with
+one fault of the kind a game written in a hurry has: inputs far from zero in
+units of their own, inputs that never change, inputs that copy others, no limit
+on an episode's length, and episodes that ignore their seed. None is built in,
+so a run names one in full, as in
+`train --game evolvarium.games.broken:DeadInputSnake`.
+
 A game that declares a `scene` can be watched on the dashboard. The scene lists
 layers of cells, dots, boxes or lines and labels such as the score, and `draw`
 returns each layer's items and each label's value after every step of a recorded

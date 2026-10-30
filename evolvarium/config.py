@@ -113,6 +113,22 @@ class HistoryConfig:
 
 
 @dataclass(frozen=True)
+class LimitsConfig:
+    """How long a game's code may take before the job playing it ends.
+
+    Both are measured on the clock, not in processor time, so time the machine
+    spends on other work counts too. An episode that runs over is played once
+    more before the job ends, so a pause on the machine's side ends nothing on
+    its own.
+    """
+
+    # One turn: every agent's observation and action, and the step itself.
+    step_seconds: float = 10.0
+    # A whole episode, from reset to the end.
+    episode_seconds: float = 120.0
+
+
+@dataclass(frozen=True)
 class CheckpointConfig:
     save_every: int = 25
     keep_last: int = 5
@@ -144,6 +160,7 @@ class Config:
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
     held_out: HeldOutConfig = field(default_factory=HeldOutConfig)
     history: HistoryConfig = field(default_factory=HistoryConfig)
+    limits: LimitsConfig = field(default_factory=LimitsConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     paths: PathConfig = field(default_factory=PathConfig)

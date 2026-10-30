@@ -38,7 +38,7 @@ class GenerationReport:
         "generation", "population", "best", "best_fitness", "best_score",
         "mean_fitness", "mean_score", "max_episode_score", "scoring_fraction",
         "mean_steps", "ends", "diversity", "species_count", "mutation_rate",
-        "stagnation", "elapsed", "episodes", "record", "evaluated",
+        "stagnation", "elapsed", "episodes", "record", "evaluated", "notes",
     )
 
     def __init__(self, **fields):
@@ -94,6 +94,7 @@ class Population:
             architecture=self.architecture.to_dict(),
             exploration_rate=config.evolution.exploration_rate,
             replay_steps=config.history.replay_steps,
+            limits=config.limits,
         )
         self._runner = make_runner(self.context)
 
@@ -170,13 +171,16 @@ class Population:
         trials = max(1, self.config.evolution.evaluation_episodes)
         base_seed = int(self.rng.integers(1 << 30))
 
+        notes: list[str] = []
         if pool is not None and pool.active:
             tasks = [(m.genome, base_seed, trials, record) for m in self.members]
             for member, outcome in zip(self.members, pool.map(tasks), strict=True):
                 self._apply(member, outcome)
+                notes += outcome.notes
+            notes = pool.take_notes() + notes
         else:
             for member in self.members:
-                self.evaluate_individual(member, base_seed, record=record)
+                notes += self.evaluate_individual(member, base_seed, record=record).notes
 
         younger = self.config.evolution.younger_wins_ties
         if younger:
@@ -229,6 +233,8 @@ class Population:
             elapsed=time.time() - started,
             episodes=self.total_episodes - episodes_before,
             record=record,
+            # Problems met and got past while scoring, in words.
+            notes=notes,
         )
 
         self.members = self._breed(ranked, mutation_rate)
