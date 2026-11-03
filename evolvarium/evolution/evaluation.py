@@ -42,6 +42,7 @@ import numpy as np
 from .. import games
 from ..config import LimitsConfig
 from ..contract import Outcome
+from ..fixes import Fixes, with_fixes
 from ..nn.network import Architecture, PolicyNetwork
 from ..replays import Recorder
 
@@ -77,6 +78,8 @@ class EvalContext:
     exploration_rate: float
     replay_steps: int
     limits: LimitsConfig = field(default_factory=LimitsConfig)
+    # What the probe changed about the game, if it changed anything.
+    fixes: Fixes | None = None
 
 
 @dataclass
@@ -118,13 +121,19 @@ _CALLS = {
     "forward": "the network",
     "decode": "reading the network's outputs as actions",
     "explore": "picking a random action",
+    "choose": "picking an action",
     "add": "recording {game}.draw's output",
     "pack": "packing the replay",
 }
 
+_FIXES_FILE = with_fixes.__code__.co_filename
 
-def _fault(error: Exception, game: str, seed: int, turn: int, ended: bool) -> GameFault:
-    entries = traceback.extract_tb(error.__traceback__)
+
+def game_fault(error: Exception, game: str, seed: int, turn: int, ended: bool) -> GameFault:
+    """`error`, raised under a playing function's `try`, in words that say where."""
+    # A fixed game is played through a wrapper, and the call to blame is the one it made.
+    entries = [entry for entry in traceback.extract_tb(error.__traceback__)
+               if entry.filename != _FIXES_FILE]
     # The first entry is `play` itself and the next is the call it made.
     if len(entries) > 1:
         call = entries[1].name
@@ -149,7 +158,10 @@ class _Runner:
 
     def __init__(self, ctx: EvalContext):
         self.ctx = ctx
-        self.game = games.create(ctx.game, ctx.settings)
+        game = games.create(ctx.game, ctx.settings)
+        # Faults are blamed on the game, not on the wrapper around a fixed one.
+        self.label = type(game).__name__
+        self.game = with_fixes(game, ctx.fixes)
         self.network = PolicyNetwork(Architecture.from_dict(ctx.architecture))
         self.higher = self.game.direction == "higher"
         self.scene = self.game.scene()
@@ -229,7 +241,7 @@ class _Runner:
         except GameFault:
             raise
         except Exception as error:
-            raise _fault(error, type(game).__name__, seed, turn, ended) from error
+            raise game_fault(error, self.label, seed, turn, ended) from error
         self._next_beat = next_beat
         return outcome
 
@@ -265,7 +277,8 @@ class _Runner:
                 message = f"{second}. It ran over the first time it was played as well"
                 if second.endless:
                     message += (". A game whose episodes can go on forever needs a rule "
-                                "that ends one after so many steps")
+                                "that ends one after so many steps, or probe.enabled=true "
+                                "to work one out")
                 raise TimeLimit(message, second.endless) from None
             notes.append(f"{first}; played again, it finished in time")
             return outcome

@@ -12,11 +12,13 @@ import time
 import webbrowser
 from pathlib import Path
 
-from . import games, settings
+from . import games, probe, settings
 from .config import CONFIG, Config
 from .contract import settings_dict
 from .events import EventBus, Note
-from .evolution.pool import resolve_workers
+from .evolution.evaluation import GameFault
+from .evolution.pool import WorkerError, resolve_workers
+from .fixes import with_fixes
 from .held_out import (
     TargetError,
     candidates_from,
@@ -189,6 +191,8 @@ def command_train(args: argparse.Namespace) -> int:
     except checkpoint.CheckpointMismatch as error:
         print(f"  cannot resume: {error}")
         return 1
+    except (GameFault, WorkerError) as error:
+        return _refused("train", error)
 
     # This dashboard shows the one run, alongside the runs already on disk.
     lab = Lab(config, can_start=False)
@@ -380,7 +384,7 @@ def command_export(args: argparse.Namespace) -> int:
         generation=int(population_meta.get("generation", 0)),
         genome=genome,
         summaries=lineage_summaries(run_dir),
-        game=games.create(context.game, context.settings),
+        game=with_fixes(games.create(context.game, context.settings), context.fixes),
         architecture=architecture,
         run_id=run_dir.name,
         destination=destination,
@@ -532,6 +536,22 @@ def command_settings(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_probe(args: argparse.Namespace) -> int:
+    assignments = args.set or []
+    try:
+        config = _game_config(args.game)
+        # Asking for a probe is what turns it on here.
+        config = dataclasses.replace(config, probe=dataclasses.replace(config.probe, enabled=True))
+        config = settings.apply(config, assignments)
+        settings.check(config, named=[name for name, _ in assignments], dashboard=False)
+        report = probe.run_guarded(config)
+    except (SettingsError, games.UnknownGame, GameFault, WorkerError) as error:
+        return _refused("probe", error)
+    for line in report.lines():
+        print(f"  {line}".rstrip())
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="evolvarium", description="Neuroevolution of game-playing agents"
@@ -652,6 +672,17 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("--game", default=None,
                          help=f"a built-in game or package.module:Class, default {CONFIG.game}")
     listing.set_defaults(func=command_settings)
+
+    probing = sub.add_parser(
+        "probe", help="play a game with untrained players and report what that shows"
+    )
+    probing.add_argument("--game", default=None,
+                         help=f"a built-in game or package.module:Class, default {CONFIG.game}")
+    probing.add_argument(
+        "--set", action="extend", nargs="+", type=_assignment, metavar="NAME=VALUE",
+        help="any other setting, by the name the settings command lists",
+    )
+    probing.set_defaults(func=command_probe)
 
     return parser
 

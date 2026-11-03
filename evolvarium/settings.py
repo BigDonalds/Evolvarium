@@ -297,6 +297,10 @@ def _unused(config: Config, dashboard: bool) -> dict[str, str]:
         unused["checkpoint.keep_last"] = "checkpoint.save_every is 0"
     for name in _names(config.held_out):
         unused[f"held_out.{name}"] = "training never plays the held-out games"
+    if not config.probe.enabled:
+        for name in _names(config.probe):
+            if name != "enabled":
+                unused[f"probe.{name}"] = "probe.enabled is false"
     if not dashboard:
         for name in _names(config.server):
             unused[f"server.{name}"] = "the run has no dashboard"
@@ -361,6 +365,11 @@ def _problems(config: Config, unused: dict[str, str]) -> Problems:
         problems.at_least(f"history.{name}", getattr(history, name), 0)
     problems.above("limits.step_seconds", config.limits.step_seconds, 0)
     problems.above("limits.episode_seconds", config.limits.episode_seconds, 0)
+    if config.probe.enabled:
+        problems.at_least("probe.episodes", config.probe.episodes, 1)
+        problems.at_least("probe.search_steps", config.probe.search_steps, 0)
+        problems.above("probe.seconds", config.probe.seconds, 0)
+        problems.at_least("probe.ceiling", config.probe.ceiling, 2)
     problems.at_least("checkpoint.save_every", config.checkpoint.save_every, 0)
     if "checkpoint.keep_last" not in unused:
         problems.at_least("checkpoint.keep_last", config.checkpoint.keep_last, 0)

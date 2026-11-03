@@ -113,6 +113,10 @@ class Cart:
             return self._finish(EndCause.BALANCED)
         return True
 
+    def stop(self) -> None:
+        """End the episode from outside, as the step limit would."""
+        self._finish(EndCause.BALANCED)
+
     def _finish(self, cause: EndCause) -> bool:
         self.finished = True
         self.end = cause

@@ -76,6 +76,9 @@ class ArenaGame(Game):
     def steps(self) -> int:
         return self.match.steps
 
+    def stop(self, stalled: bool) -> None:
+        self.match.stop(stalled)
+
     # -------------------------------------------------------------- results
 
     def goal(self) -> tuple[float, dict[str, float]]:

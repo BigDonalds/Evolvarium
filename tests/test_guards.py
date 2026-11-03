@@ -160,7 +160,7 @@ def test_an_episode_that_never_ends_is_ended_with_a_hint():
         r"the episode with seed 7 was still going after \d+ ms and [\d,]+ steps, more than "
         r"limits\.episode_seconds allows \(0\.5 s\)\. It ran over the first time it was "
         r"played as well\. A game whose episodes can go on forever needs a rule that ends "
-        r"one after so many steps", str(raised.value))
+        r"one after so many steps, or probe\.enabled=true to work one out", str(raised.value))
 
 
 def test_the_trainer_passes_notes_on(tmp_path):
@@ -240,7 +240,7 @@ def test_a_genome_that_kills_every_worker_ends_the_job():
 
 
 def test_a_worker_stuck_in_a_step_is_ended(monkeypatch):
-    monkeypatch.setattr(pool_module, "_SLACK", 0.2)
+    monkeypatch.setattr(pool_module, "SLACK", 0.2)
     started = time.perf_counter()
     with EvaluationPool(context(QUICK, trouble="hang"), 1, own_process=True) as pool:
         with pytest.raises(WorkerLost) as raised:

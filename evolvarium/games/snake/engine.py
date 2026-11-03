@@ -128,6 +128,11 @@ class Episode:
             return False
         return len(set(self._recent)) < len(self._recent) * 0.35
 
+    def stop(self, stalled: bool) -> None:
+        """End the episode from outside, as hunger or the step limit would."""
+        cause = DeathCause.STARVATION if stalled else DeathCause.STEP_LIMIT
+        self._finish(cause, self.snake.head)
+
     def _finish(self, cause: DeathCause, cell: Cell, *, avoidable: bool = False) -> bool:
         self.finished = True
         self.result.avoidable_death = avoidable

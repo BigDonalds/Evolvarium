@@ -10,6 +10,247 @@ directly.
 
 ---
 
+## The probe - measuring a game before anything trains on it
+
+A game with something wrong with it still trains, only worse, and nothing in the
+run says why. Cart-pole with its inputs left in units of their own reaches 235
+where the clean game reaches 492, on a dashboard that looks like any other slow
+run. Even untrained networks show it, lasting 68.0 steps on average on the clean
+game and 21.7 on that one. Whoever wrote the game has to suspect the inputs and
+go looking.
+
+The probe goes looking first. It plays the game before a run starts, works out
+what is wrong from what it sees, fixes what it can and says in plain words what
+it found and what it did. `python -m evolvarium probe --game ...` prints the
+report and stops there. `--set probe.enabled=true`, on `train` or the
+dashboard's form, probes first and trains on the game as fixed, and keeps the
+report in the run's directory as `probe.json`. It is off by default, so a run
+without it is the run it always was, and the two can still be compared.
+
+**The players.** There are four, and none has learned anything: one picks at
+random, one repeats a single action for a whole episode, one holds each action
+for 2 to 19 steps, and the last is an untrained network, a new one each episode.
+Each plays `probe.episodes` episodes, 20 by default, on seeds from 600000, a
+block nothing else scores on. Two searches can follow. If no episode has reached
+the ceiling, more untrained networks play until one does or
+`probe.search_steps`, 40,000 steps, have gone by. If some input has not moved,
+more held actions play for up to half that. `probe.seconds`, 60 s by default,
+covers the whole probe, which stops there and says so. It runs in a process of
+its own with the heartbeat a worker has, so a step that never returns ends the
+probe with a message and does not hang it.
+
+**What it looks for.**
+
+| Kind | How the probe tells | What it does |
+|---|---|---|
+| unscaled | An input reads beyond 8 either way, moves by under 0.001, or sits 50 times its span from zero | Moves and scales it to read within -1 to 1 |
+| dead | An input never changes | Drops it and sizes the network from the rest |
+| duplicate | An input is an exact straight line of another, flipped or scaled | Drops it and keeps the earlier one |
+| endless | An episode is still going at `probe.ceiling` steps, 5,000 by default | Adds limits on the episode's steps |
+| unseeded | The same seed and the same moves go differently the second time | Seeds the generators the game holds at the start of each episode |
+| rare | A goal differs from its usual value in under 2% of at least 20 episodes | Reports it |
+| slow | A step passes `limits.step_seconds`, or an episode at the measured speed would pass `limits.episode_seconds` | Reports it |
+
+Only the inputs at fault are touched, by fixed numbers measured once, so an
+input means the same in the first generation as in the last and a saved model
+can do the same sums. An input whose range takes in zero is only scaled, so that
+zero still means zero, and any other is centred as well. The 8 leaves plenty of
+room: the widest input in a clean game reads 2.73, cart-pole's `pole_spin`, and
+the arena's all stay within -1 to 1. Category inputs are left out of these
+checks. Values that are not finite are reported and left for the game's author.
+A game with nothing wrong gets no fixes at all, and `with_fixes` hands back the
+game itself.
+
+**Copies that are not copies.** Snake's `danger_X` and `space_X` are exact
+opposites over 8,000 episodes of weak play, because a snake that short never
+sees a pocket. They only part once a snake is long enough to box itself in,
+which is when `space` earns its place. A first version of the check would have
+dropped it from every Snake run. So an input with only two values counts as a
+copy only if it is proportional to the other, and an exact opposite gets a note
+in the report with both kept. Inputs with three or more values do not line up by
+accident, and any exact straight line between them counts.
+
+**Limits on episodes.** A game only gets a limit if an episode reached the
+ceiling. One whose episodes all ended by themselves gets none, however long they
+ran, since a limit set too tight is what ended Snake's best games at 3,000
+steps. Otherwise there are two. The stall limit is ten times the longest wait
+for the score to change, and never under 100, and it is used only if the score
+moves often enough to tell and the limit comes in under the ceiling. The probe
+then plays again with it. If every episode now ends, the step cap is only a
+backstop, at ten times the longest episode seen or twice the ceiling, whichever
+is more, which is how an endless Snake gets a stall limit of 610 and a step cap
+of 10,000. If something still reaches the ceiling, or there is no stall limit,
+the ceiling is the cap, and the report says that is only where the probe stopped
+waiting and that `probe.ceiling` can raise it. Cutting an episode goes through a
+new optional method in the contract, `stop(stalled)`, which lets a game finish
+its results and record how the episode ended. A game whose results cannot be
+read until the end and has no `stop` is told it needs one.
+
+**Seeds.** Six seeds are each played twice on one game with the same moves and
+once on a new game, comparing inputs, score and how the episode ended, and the
+report gives the step where two plays part. The probe then tries seeding at the
+start of every episode: the shared `random` and NumPy generators and any
+generator it can reach from the game's attributes, each by where it sits in the
+game. If the same seed now gives the same episode, that is the fix. If it does
+not, as with a generator built unseeded inside `reset`, the report says it
+cannot be cured and the run goes ahead.
+
+**What it found.** All 15 faults, and the three clean games came out with no
+fixes at all. The 18 probes took about three minutes on the default budget:
+
+| Game | Fault | Time | Episodes | Steps | Found | Changed |
+|---|---|---:|---:|---:|---|---|
+| Snake | none | 16.8 s | 359 | 47,054 | opposites | nothing |
+| Snake | unscaled | 21.2 s | 578 | 54,400 | unscaled, opposites | 7 inputs scaled |
+| Snake | dead | 29.8 s | 982 | 74,563 | dead, opposites | 4 dropped, 11 left |
+| Snake | duplicate | 21.4 s | 459 | 54,598 | duplicate, opposites | 3 dropped, 11 left |
+| Snake | endless | 24.2 s | 215 | 62,295 | endless, unscaled, opposites | stall limit 610, step cap 10,000, 1 input scaled |
+| Snake | unseeded | 18.5 s | 359 | 46,778 | unseeded, opposites | generators seeded |
+| cart-pole | none | 0.8 s | 665 | 42,309 | nothing | nothing |
+| cart-pole | unscaled | 1.1 s | 2,003 | 43,229 | unscaled | 3 inputs scaled |
+| cart-pole | dead | 1.3 s | 2,904 | 63,530 | dead | 4 dropped, 4 left |
+| cart-pole | duplicate | 1.2 s | 684 | 45,687 | duplicate | 3 dropped, 4 left |
+| cart-pole | endless | 0.3 s | 182 | 15,802 | endless | step cap 5,000 |
+| cart-pole | unseeded | 0.9 s | 651 | 42,262 | unseeded | generators seeded |
+| arena | none | 5.6 s | 411 | 53,640 | nothing | nothing |
+| arena | unscaled | 7.5 s | 491 | 67,231 | unscaled | 14 inputs scaled |
+| arena | dead | 8.7 s | 598 | 87,215 | dead | 4 dropped, 19 left |
+| arena | duplicate | 7.5 s | 491 | 67,227 | duplicate | 3 dropped, 19 left |
+| arena | endless | 6.0 s | 12 | 60,000 | endless | step cap 5,000 |
+| arena | unseeded | 5.8 s | 410 | 52,841 | unseeded | generators seeded |
+
+The extra scaling on an endless Snake is real and not a false alarm: with the
+starvation limit raised to 10^9, the input counting towards it barely moves. The
+opposites on every Snake row are the note on `danger` and `space`. Unscaled
+Snake has 8 inputs planted and 7 are scaled, and the one missed is below.
+
+**Inputs only a fight moves.** The first version called inputs dead on the clean
+arena. `hurt`, `health` and `rival_adjacent` change only once the rival catches
+someone, and in a lot of seed blocks random moves, a repeated action and
+untrained networks never get caught. Over 20 blocks at the default budget,
+`hurt` was called dead in 5, and `health` and `rival_adjacent` in 1 each, while
+Snake and cart-pole lost nothing. In block 600000 only the held player moved
+them at all, `hurt` on one row in the whole probe. A dead verdict takes an input
+out of training for good and keeping a dead one costs next to nothing, so this
+is the mistake to avoid. That is what the held search is for, and an input now
+has to stay still through every pass of the probe, including the first, before
+it is called dead. Over 40 blocks of the three clean games nothing was called
+dead, which took about 19 minutes with other jobs running. Over 10 blocks each
+of the endless and unseeded versions, also nothing, in about nine and a half
+minutes.
+
+**Finding a game with no end.** A game with no end only shows it if a player
+outlasts everything else that can end an episode, and cart-pole's pole falls
+long before 5,000 steps. Only 5 of 400 untrained networks reach the ceiling on
+an endless cart-pole, so 20 of them usually miss it. A climbing player, which
+took a network that did well, changed it a little and tried again, looked like
+the obvious answer. It made no difference. Misses out of 100 seed blocks:
+
+| Search steps | Untrained networks | Changes of 0.5 | Same, one seed | Changes of 0.8 | Same, one seed |
+|---:|---:|---:|---:|---:|---:|
+| 10,000 | 13 | 11 | 9 | 12 | 9 |
+| 20,000 | 2 | 2 | 0 | 3 | 4 |
+| 40,000 | 0 | 0 | 0 | 0 | 0 |
+
+The number of steps does the work, so the search is plain untrained networks
+with a budget of 40,000, and the climbing was dropped.
+
+**A fixed game in a run.** `evolvarium/fixes.py` holds `Fixes`, plain data, and
+`FixedGame`, which plays a game with them through the same contract as any
+other. The fixes go to every worker with the rest of the evaluation context and
+are saved in checkpoints and manifests. A resumed run and a run carried on keep
+them without probing again, and held-out scoring and replays read the game as
+the run did. An exported model of a fixed game still takes every input the game
+has: the file lists what its network reads, with each input's offset and scale,
+and `player.py` does the sums itself. A file like that is version 3 of the
+format. Runs with the probe on are compared apart from runs without it. Files
+from before all this load as having no fixes.
+
+**Does it help?** A short look on cart-pole, not the real comparison. Three dev
+training seeds per arm, 60 genomes, 4 episodes each and 30 generations, with the
+best genome scored over dev seeds 700000-700059 under the rules it trained on.
+It took 329 s, about five and a half minutes. The endless game is left out,
+since a cap of 5,000 changes what a score means and without it good genomes run
+into the time limit.
+
+| Cart-pole | Fixes off | Fixes on |
+|---|---:|---:|
+| clean | 492.4 | |
+| unscaled | 235.3 | 500.0 |
+| dead | 500.0 | 492.4 |
+| duplicate | 496.2 | 499.9 |
+| unseeded | 493.5 | 468.0 |
+
+Unscaled is the only fault that hurts cart-pole at this budget, and there the
+fix is plain: 126 to 341 with it off and 500 on every seed with it on. Dead with
+the fix on scored 500.0, 477.3 and 500.0, the same as the clean game seed for
+seed, which is the check that dropping inputs changes nothing else. Cart-pole is
+easy enough that dead and duplicate inputs cost nothing to measure here, so
+there was little to rescue.
+
+The unseeded game at 468.0 looked worse with the fix on, so clean and both
+unseeded arms got ten more seeds, 332 s more. Clean averaged 487.5 (sd 30.2),
+unseeded with the fix off 499.7 (sd 0.7) and with it on 491.4 (sd 18.3). Over
+all 13 seeds that is 488.6, 498.2 and 486.0. So seeding puts the game back level
+with the clean one, as it should, and the 468.0 came from having only three
+seeds. The surprise is the fault itself, which trains a little better than
+either. Each genome plays episodes of its own there where a seeded game gives
+them all the same four, and that may be harder to fit to, though nothing here
+shows it. Either way the cost of ignoring a seed is not in cart-pole's score. It
+is that no run can be replayed, no two genomes are compared on the same games
+and no score comes out the same twice, and judging that fault by score alone
+would miss it.
+
+**What it cannot see.** The players being weak is also the probe's limit.
+Unscaled Snake's `length_ratio`, multiplied by 30, reads 0.46 to 2.3 in weak
+play, so it is left alone, and it reaches about 30 for a long snake. A narrow
+input centred on its weak-play range can read well outside -1 to 1 later for the
+same reason, and nothing clips it. A dead verdict has the same limit, as `hurt`
+showed, and so do two yes-or-no inputs that agree until a player gets somewhere
+these never did. A game with no end is only found if something outlasts its
+other rules, which the search makes very likely on cart-pole but cannot promise
+for every game. A stall limit is measured from weak players too, and whether 610
+steps is ever too few for a long snake has not been measured. A cap also changes
+a game's scale: a cart-pole capped at 5,000 can score ten times what the clean
+game can. The determinism check compares episodes within one process, so
+episodes depending on the order of a set of strings look fine here. A
+`probe.ceiling` below the default can still call `hurt` dead on an endless
+arena, and so can `probe.search_steps=0` on the clean one. TODO.md has these.
+
+**Checking it.** `tests/test_probe.py` is new, with 95 tests. Every planted
+problem is found and named on small games made for the purpose, one of each pair
+of duplicates goes, and in-scale inputs stay. A clean game is played as written
+and gets the same report twice. Rare rewards, slow steps and inputs that are not
+numbers are flagged and left, too few steps changes nothing, and a probe with no
+time at all still gives a report. A step that never returns and a game that
+kills its process end the probe with a message. Of these 23 are slow: all 18
+games on the default budget, finding only what was planted and never running out
+of time, and the clean arena on five more seed blocks. `tests/test_fixes.py` is
+new, with 54 tests. A network reads the inputs kept, moved and then scaled, a
+cap ends an episode of every game with its results readable, and generators are
+seeded wherever a game keeps them. A fault is blamed on the game's call and not
+on the wrapper around it, a fixed game scores the same on workers, and a game
+with nothing wrong trains the same with the probe on. A checkpoint carries on
+the same, a model of a fixed game plays as it trained through the player alone,
+and the dashboard probes the runs it starts. `tests/test_player.py` and
+`tests/test_settings.py` gain 12 more between them. The held-out replay of the
+model in `models/` still matches its record game for game. The whole suite, 639
+passed and 2 skipped, took 118 s, with the other jobs on this machine finished,
+and the new tests account for about 55 s of that. The 25 slow tests took 346 s,
+and the probe's 23 are about two thirds of it.
+
+**What it costs.** With the probe off, or on a game it found nothing wrong with,
+nothing per step, since the game is played as written. On a game it changed, the
+wrapper costs 1.8 µs a step on cart-pole, 3.2 µs on the arena and 1.7 µs on
+Snake with every fix switched on at once. That was timed on processor time over
+the same episodes each way, eight rounds with the order switched, in 40 s: 9.94
+µs against 8.19 µs on cart-pole, 44.92 µs against 41.71 µs on the arena and
+181.55 µs against 179.90 µs on Snake, the fastest round of each. That is a fifth
+of a cart-pole step, 8% of an arena step and under 1% of a Snake step. The
+probe's own time before a run is in the table above.
+
+---
+
 ## Limits on a game's code, and games broken on purpose
 
 The engine trusted a game's code completely. A step that never returned hung

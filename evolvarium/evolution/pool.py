@@ -36,7 +36,7 @@ from .evaluation import EvalContext, GameFault, beat_interval, init_worker, run_
 
 # How long a busy worker may stay quiet beyond a step's limit and the interval
 # between its reports, for the time a loaded machine takes to schedule it.
-_SLACK = 2.0
+SLACK = 2.0
 
 
 def resolve_workers(requested: int) -> int:
@@ -111,7 +111,7 @@ class WorkerError(RuntimeError):
     """The engine's own code failed in a worker. The cause holds its traceback."""
 
 
-class _RemoteTraceback(Exception):
+class RemoteTraceback(Exception):
     def __str__(self) -> str:
         return str(self.args[0])
 
@@ -186,7 +186,7 @@ class EvaluationPool:
         self._spawn = multiprocessing.get_context()
         limits = ctx.limits
         self._step_seconds = limits.step_seconds
-        self._stalled = limits.step_seconds + beat_interval(limits) + _SLACK
+        self._stalled = limits.step_seconds + beat_interval(limits) + SLACK
         self._lock = threading.Lock()
         self._closed = False
         self._mapping = False
@@ -282,7 +282,7 @@ class EvaluationPool:
             now = clock()
             if self._closed:
                 raise RuntimeError("the pool was closed while it was scoring")
-            if now - before - timeout > _SLACK:
+            if now - before - timeout > SLACK:
                 # This process was held up well past the wait it asked for, as
                 # when the machine sleeps, so the silence since is not theirs.
                 for worker in self._crew:
@@ -326,7 +326,7 @@ class EvaluationPool:
                 raise message[2]
             elif kind == "error":
                 raise WorkerError(f"scoring failed in a worker: {message[2]}") from (
-                    _RemoteTraceback(message[3]))
+                    RemoteTraceback(message[3]))
             else:
                 raise WorkerError(f"a worker could not start: {message[1]}")
         return finished

@@ -78,6 +78,9 @@ class SnakeGame(Game):
     def steps(self) -> int:
         return self.episode.steps
 
+    def stop(self, stalled: bool) -> None:
+        self.episode.stop(stalled)
+
     # -------------------------------------------------------------- results
 
     def goal(self) -> tuple[float, dict[str, float]]:

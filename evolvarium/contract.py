@@ -19,7 +19,8 @@ An episode is reset with a seed, and the same seed must give the same episode.
 Each step the engine asks every agent named in `agents` for its observation,
 picks an action for each, then hands all of them to `step` together, so a group
 of agents shares one episode. `over`, `end`, `score` and `steps` are read once
-the episode is over.
+the episode is over. The probe also reads `score` between steps, and calls `stop`
+to end an episode no rule of the game would end.
 
 A game that declares a `scene` can be watched. While an episode is recorded the
 engine calls `draw` after the reset and after every step, and the dashboard
@@ -483,6 +484,14 @@ class Game:
     @property
     def steps(self) -> int:
         raise NotImplementedError
+
+    def stop(self, stalled: bool) -> None:
+        """The engine is ending this episode early, so finish its results now.
+
+        `stalled` says the score had stopped changing, rather than the episode
+        just running long. A game whose results can be read at any point needs
+        nothing here.
+        """
 
     # -------------------------------------------------------------- results
 

@@ -10,11 +10,24 @@ Items still open at the baseline are in Snake-AI's
 
 - **`scored%`** counts genomes whose best episode scored above zero, which says
   nothing about a game that wants its score low.
-- **No cap on an episode's steps.** A game with no rule ending its episodes is
-  stopped by `limits.episode_seconds`, which ends the run with a hint to add
-  one. The engine could cap the steps itself instead, but what the cap should
-  be depends on the game, which is for the probe to work out from the game's
-  own episodes.
+- **No cap on an episode's steps with the probe off.** A game with no rule ending
+  its episodes is stopped by `limits.episode_seconds`, which ends the run with a
+  hint to add one or turn the probe on.
+
+## Probe
+
+- **Inputs that only move once a player is good.** The probe plays with players
+  that have learned nothing, so an input it calls dead may only be quiet in weak
+  play, and one it leaves alone may grow far out of range in strong play. A run
+  could watch the inputs it dropped or left alone and say so when one moves.
+- **No way to keep an input the probe would drop.** Turning the probe off is the
+  only way to overrule it for now.
+- **Episodes that differ between processes.** The determinism check compares
+  episodes within one process, so a game whose episodes depend on the order of a
+  set of strings looks fine here and differs between workers.
+- **A low `probe.ceiling` on a game with no end.** Below the default the held
+  players stop looking once three of them reach it, and on an endless arena that
+  has called `hurt` dead. `probe.search_steps=0` does the same on the clean arena.
 
 ## Engine
 

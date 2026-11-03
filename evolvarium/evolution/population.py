@@ -25,6 +25,7 @@ import numpy as np
 
 from .. import games
 from ..config import Config
+from ..fixes import Fixes, with_fixes
 from ..nn.network import Architecture, PolicyNetwork, random_genome
 from . import operators, selection, speciation
 from .evaluation import EvalContext, EvalResult, make_runner
@@ -70,11 +71,12 @@ class GenerationReport:
 class Population:
     """Owns the genomes and drives one generation at a time."""
 
-    def __init__(self, config: Config, seed: int | None = None):
+    def __init__(self, config: Config, seed: int | None = None, fixes: Fixes | None = None):
         config = games.resolve(config)
         self.config = config
         self.rng = np.random.default_rng(seed)
-        self.game = games.create(config.game, config.settings)
+        self.fixes = None if fixes is None or fixes.empty else fixes
+        self.game = with_fixes(games.create(config.game, config.settings), self.fixes)
         self.higher = self.game.direction == "higher"
         # Described once, as the dashboard reads it with every generation.
         scene = self.game.scene()
@@ -95,6 +97,7 @@ class Population:
             exploration_rate=config.evolution.exploration_rate,
             replay_steps=config.history.replay_steps,
             limits=config.limits,
+            fixes=self.fixes,
         )
         self._runner = make_runner(self.context)
 

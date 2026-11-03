@@ -19,8 +19,9 @@ from pathlib import Path
 
 import numpy as np
 
+from ..fixes import Fixes
 from ..nn.network import Architecture, PolicyNetwork
-from ..player import FORMAT, VERSION, ModelError, check, read
+from ..player import FIXED_INPUTS_VERSION, FORMAT, VERSION, ModelError, check, read
 
 __all__ = ["ModelError", "build", "dumps", "read", "to_genome", "write"]
 
@@ -40,11 +41,13 @@ def build(
     source: dict,
     report: dict | None = None,
     exported_at: str | None = None,
+    fixes: dict | None = None,
 ) -> dict:
     """The model file for `genome`, as a dict ready for `write`.
 
     `actions` is the game's action parts as `contract.Actions.describe` gives
-    them.
+    them. `fixes` is what the probe changed about the game, as `Fixes.to_dict`
+    gives it, and `input_names` are always the game's own.
     """
     network = PolicyNetwork(architecture).load(np.asarray(genome, dtype=np.float32))
     arrays = network.layer_arrays()
@@ -60,21 +63,41 @@ def build(
             "biases": arrays[f"bias_{index}"].astype(np.float64).tolist(),
         })
 
+    inputs = {"names": list(input_names), "encoding": encoding, "settings": settings}
+    changed = Fixes.from_dict(fixes)
+    fixed_inputs = changed is not None and changed.inputs_changed
+    if fixed_inputs:
+        inputs.update(_fixed_inputs(changed, len(input_names)))
+
     document = {
         "format": FORMAT,
-        "version": VERSION,
+        "version": FIXED_INPUTS_VERSION if fixed_inputs else VERSION,
         "exported_at": exported_at
         or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source": source,
         "game": game,
-        "inputs": {"names": list(input_names), "encoding": encoding, "settings": settings},
+        "inputs": inputs,
         "actions": {"parts": [dict(part) for part in actions]},
         "network": {"kind": "dense", "layers": layers},
     }
     if report is not None:
         document["report"] = report
+    if changed is not None:
+        document["fixes"] = fixes
     check(document)
     return document
+
+
+def _fixed_inputs(fixes: Fixes, count: int) -> dict:
+    """How the network reads the game's `count` inputs, in the file's terms."""
+    used = list(range(count)) if fixes.keep is None else list(fixes.keep)
+    offsets = (0.0,) * len(used) if fixes.offset is None else fixes.offset
+    scales = (1.0,) * len(used) if fixes.scale is None else fixes.scale
+    return {
+        "used": used,
+        "offsets": np.asarray(offsets, dtype=np.float32).astype(np.float64).tolist(),
+        "scales": np.asarray(scales, dtype=np.float32).astype(np.float64).tolist(),
+    }
 
 
 def dumps(document: dict) -> str:

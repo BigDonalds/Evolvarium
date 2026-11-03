@@ -129,6 +129,23 @@ class LimitsConfig:
 
 
 @dataclass(frozen=True)
+class ProbeConfig:
+    """Measuring a game before training it, and fixing what the numbers show."""
+
+    # Off, a run plays the game exactly as the game wrote it.
+    enabled: bool = False
+    # Episodes each kind of player plays.
+    episodes: int = 20
+    # Steps of further untrained networks, looking for an episode that reaches the
+    # ceiling when none has yet.
+    search_steps: int = 40_000
+    # How long the whole probe may take. It stops early and says so.
+    seconds: float = 60.0
+    # Steps after which an episode counts as one that would not have ended.
+    ceiling: int = 5000
+
+
+@dataclass(frozen=True)
 class CheckpointConfig:
     save_every: int = 25
     keep_last: int = 5
@@ -161,6 +178,7 @@ class Config:
     held_out: HeldOutConfig = field(default_factory=HeldOutConfig)
     history: HistoryConfig = field(default_factory=HistoryConfig)
     limits: LimitsConfig = field(default_factory=LimitsConfig)
+    probe: ProbeConfig = field(default_factory=ProbeConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     paths: PathConfig = field(default_factory=PathConfig)

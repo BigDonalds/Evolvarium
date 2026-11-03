@@ -35,8 +35,9 @@ python -m pytest
 
 `python -m pytest -m slow` replays all 60 held-out games of the model in
 `models/` and checks each game's score, length and how it ended against the
-record in `tests/data`. It takes under a minute. CI runs both on Linux, Windows,
-Windows on ARM and macOS.
+record in `tests/data`, then probes every game, broken or not, on the default
+budget. It takes under six minutes. CI runs both on Linux, Windows, Windows on
+ARM and macOS.
 
 Every setting has a name. A game's are named by their path in its settings,
 such as `board.width` for Snake, and the engine's by section, such as
@@ -126,6 +127,42 @@ on an episode's length, and episodes that ignore their seed. None is built in,
 so a run names one in full, as in
 `train --game evolvarium.games.broken:DeadInputSnake`.
 
+The probe looks for those faults in any game before anything trains on it.
+Players that have learned nothing play the game, one at random, one repeating a
+single action, one holding each action for a while and untrained networks, on
+seeds from 600000 up. It takes about a second on cart-pole, under 10 s on the
+arena and under 35 s on Snake, and says what it measured and what it would do
+about it:
+
+```bash
+python -m evolvarium probe --game evolvarium.games.broken:DeadInputCartPole
+```
+
+`--set probe.enabled=true`, on `train` or the dashboard's form, probes the game
+before a run and trains on the game as fixed. It is off by default.
+
+- An input reading beyond 8 either way, or barely moving for where it sits, is
+  moved and scaled to read about -1 to 1. Inputs in range are left alone.
+- An input that never changes is dropped, and so is one that only repeats
+  another, even flipped or scaled. The network is sized from what is left.
+- A game with an episode still going at `probe.ceiling` steps, 5,000 by default,
+  gets a limit on steps with the score standing still, if its score moves often
+  enough to tell, and a limit on all the steps of an episode. A game whose
+  episodes all end by themselves gets no limit at all.
+- A game whose episodes a seed does not decide has its random generators seeded
+  at the start of each one, wherever it keeps them. If that does not settle it,
+  the report says so and the run goes ahead.
+- Rewards in under 2% of episodes, and steps too slow for the time limits, are
+  reported and left for the game's author.
+
+A game with nothing wrong is played as it was written and trains the same as with
+the probe off. The report is kept in the run's directory as `probe.json`, and the
+fixes go with its checkpoints and exported models, so a resumed run or a replay
+reads the game as the run did. A game can define `stop(stalled)` to settle an
+episode the probe's limits cut short, as the built-in games do. The players being
+weak is also the probe's limit: an input that only moves or grows once a player
+is good looks dead or well scaled to them.
+
 A game that declares a `scene` can be watched on the dashboard. The scene lists
 layers of cells, dots, boxes or lines and labels such as the score, and `draw`
 returns each layer's items and each label's value after every step of a recorded
@@ -149,6 +186,10 @@ move = player.action(inputs)  # "left", "straight" or "right"
 
 A game whose actions have several parts, such as a direction and a stride, gets
 a dict from part name to value, as the game received them in training.
+
+A model of a game the probe changed still takes every input the game has. The
+file says which of them the network reads, with the offset and scale of each, and
+the player does the sums itself.
 
 The player's docstring describes the format. `python -m evolvarium evaluate`
 scores a model file on the held-out games under the rules it records. With

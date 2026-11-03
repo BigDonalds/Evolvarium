@@ -32,12 +32,13 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .. import games, settings
+from .. import games, probe, settings
 from ..config import CONFIG, SECTIONS, Config, HistoryConfig
 from ..contract import load_settings
 from ..events import Event, EventBus, GenerationEvaluated, Note, RunFinished
-from ..evolution.evaluation import EvalContext
-from ..evolution.pool import WorkerBudget, resolve_workers
+from ..evolution.evaluation import EvalContext, GameFault
+from ..evolution.pool import WorkerBudget, WorkerError, resolve_workers
+from ..fixes import Fixes, with_fixes
 from ..held_out import choose_by_average, describe, gather_candidates, search_settings
 from ..nn.network import Architecture
 from ..persistence import checkpoint, export_model, jobs
@@ -382,6 +383,7 @@ class SavedRun(RunView):
         )
         self.evolution = recorded.get("evolution") or {}
         self.settings = None
+        self.fixes = None
         try:
             cls = games.get(self.game_name)
             self.direction = cls.direction
@@ -389,7 +391,10 @@ class SavedRun(RunView):
             self.settings = load_settings(
                 cls.Settings, checkpoint.saved_settings(self.meta or {}, recorded), strict=False
             )
-            self.game = cls(self.settings)
+            self.fixes = Fixes.from_dict(
+                (self.meta or {}).get("fixes") or self.manifest.get("fixes")
+            )
+            self.game = with_fixes(cls(self.settings), self.fixes)
             scene = self.game.scene()
             self.scene = None if scene is None else scene.describe()
             self.architecture = self._architecture(recorded)
@@ -515,6 +520,7 @@ class SavedRun(RunView):
             architecture=self.architecture.to_dict(),
             exploration_rate=0.0,
             replay_steps=CONFIG.history.replay_steps,
+            fixes=self.fixes,
         )
 
     def export_generation(self) -> int:
@@ -778,18 +784,28 @@ class Lab:
 
         from ..trainer import Trainer
 
+        report = None
+        if config.probe.enabled:
+            with self._lock:
+                refused = self._cannot_start()
+            if refused:
+                return {"problems": [refused]}
+            # Outside the lock: the other runs should not wait on this one's probe.
+            try:
+                report = probe.run_guarded(config)
+            except (GameFault, WorkerError) as error:
+                return {"problems": [str(error)]}
+
         with self._lock:
-            if self._closing:
-                return {"problems": ["the dashboard is shutting down"]}
-            busy = [*self._live, *self._waiting]
-            if len(busy) >= self.budget.total:
-                return {"problems": [self._full(busy)]}
+            refused = self._cannot_start()
+            if refused:
+                return {"problems": [refused]}
             # A seed is always recorded, so any run started here can be repeated.
             seed = secrets.randbelow(2**31) if seed is None else seed
             try:
                 trainer = Trainer(
                     config, run_id=self._new_id(), seed=seed, events=EventBus(),
-                    max_generations=generations, budget=self.budget,
+                    max_generations=generations, budget=self.budget, probed=report,
                 )
             except (OSError, ValueError) as error:
                 return {"problems": [f"{type(error).__name__}: {error}"]}
@@ -804,6 +820,13 @@ class Lab:
             self._locks[trainer.run_id] = lock
             self._launch(trainer)
         return {"ok": True, "run": trainer.run_id, "seed": seed}
+
+    def _cannot_start(self) -> str | None:
+        """Why no run can start now, if there is a reason. The lock is held."""
+        if self._closing:
+            return "the dashboard is shutting down"
+        busy = [*self._live, *self._waiting]
+        return self._full(busy) if len(busy) >= self.budget.total else None
 
     def _full(self, busy: list[str]) -> str:
         total = self.budget.total

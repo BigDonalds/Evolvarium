@@ -77,6 +77,13 @@ def version_1(document):
     document["actions"] = {"names": ["a", "b", "c"], "choice": "argmax"}
 
 
+def fixed_inputs(document):
+    """The same model laid out as version 3, its network reading five of seven inputs."""
+    document["version"] = 3
+    document["inputs"]["names"] = [f"x{i}" for i in range(7)]
+    document["inputs"].update(used=[6, 0, 1, 2, 3], offsets=[0.0] * 5, scales=[1.0] * 5)
+
+
 def small_model(activations, seed=0, scale=1.0,
                 actions=None) -> tuple[dict, np.ndarray, Architecture]:
     """A random model with 5 inputs, acting by `actions` or a choice of a, b and c."""
@@ -260,7 +267,7 @@ def test_a_choice_and_a_range_fill_three_outputs():
 
 @pytest.mark.parametrize("change, message", [
     (_set(("format",), "snake-ai-model"), "not an Evolvarium model"),
-    (_set(("version",), 3), "reads version 1 or 2; the file is version 3"),
+    (_set(("version",), 4), "reads version 1 or 2 or 3; the file is version 4"),
     (_set(("version",), True), "the file is version True"),
     (_set(("inputs", "names"), []), "inputs.names must be a list"),
     (_set(("actions", "parts"), []), "actions.parts must be a list"),
@@ -281,10 +288,18 @@ def test_a_choice_and_a_range_fill_three_outputs():
     (_then(version_1, _set(("actions", "choice"), "sample")), "chosen by 'sample'"),
     (_then(version_1, _set(("actions", "names"), ["a", "b"])),
      "gives 3 outputs, but the actions read 2"),
+    (_then(fixed_inputs, _set(("inputs", "used"), [])), "inputs.used must be a list"),
+    (_then(fixed_inputs, _set(("inputs", "used", 0), 7)), "inputs.used holds 7, not one of the 7"),
+    (_then(fixed_inputs, _set(("inputs", "used", 0), True)), "inputs.used holds True"),
+    (_then(fixed_inputs, _set(("inputs", "offsets"), [0.0])), "inputs.offsets needs 5 numbers"),
+    (_then(fixed_inputs, _set(("inputs", "scales", 0), math.nan)), "not a finite number"),
+    (_then(fixed_inputs, _set(("inputs", "used"), [0, 1, 2, 3]),
+           _set(("inputs", "offsets"), [0.0] * 4), _set(("inputs", "scales"), [1.0] * 4)),
+     "takes 5 inputs, but the model reads 4"),
     (_set(("network", "kind"), "graph"), "network kind is 'graph'"),
     (_set(("network", "layers"), []), "at least one layer"),
     (_set(("network", "layers", 0, "inputs"), 0), "whole numbers of inputs and outputs"),
-    (_set(("network", "layers", 0, "inputs"), 4), "takes 4 inputs, but the model names 5"),
+    (_set(("network", "layers", 0, "inputs"), 4), "takes 4 inputs, but the model reads 5"),
     (_set(("network", "layers", 1, "inputs"), 6), "takes 6 inputs, but layer 0 gives 7"),
     (_set(("network", "layers", 0, "activation"), "swish"), "unknown activation 'swish'"),
     (_set(("network", "layers", 0, "biases"), [0.0]), "needs 7 biases"),
@@ -296,6 +311,23 @@ def test_a_choice_and_a_range_fill_three_outputs():
 def test_broken_files_are_refused(change, message):
     with pytest.raises(ModelError, match=message):
         check(broken(change))
+
+
+def test_a_model_on_fixed_inputs_works_out_what_its_network_reads():
+    plain = Player(small_model(("tanh",))[0])
+    document, _, _ = small_model(("tanh",))
+    fixed_inputs(document)
+    document["inputs"].update(offsets=[0.0, 1.0, -1.0, 0.5, 0.0], scales=[1.0, 2.0, 0.5, 1.0, 4.0])
+    fixed = Player(document)
+
+    given = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+    reads = [0.7, (0.1 + 1.0) * 2.0, (0.2 - 1.0) * 0.5, 0.3 + 0.5, 0.4 * 4.0]
+    assert fixed.outputs(given) == plain.outputs(reads)
+    assert fixed.action(given) == plain.action(reads)
+    assert "the network reads 5 of them, each with an offset and a scale" in fixed.describe()
+    # It is given every input the game has, however few the network reads.
+    with pytest.raises(ValueError, match="takes 7 inputs, got 5"):
+        fixed.outputs(reads)
 
 
 def test_a_file_that_is_not_json_is_refused(tmp_path):

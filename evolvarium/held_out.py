@@ -33,13 +33,16 @@ from .config import CONFIG, HeldOutConfig
 from .contract import load_settings
 from .evolution.evaluation import EvalContext, EvalResult, make_runner
 from .evolution.pool import EvaluationPool, resolve_workers
+from .fixes import Fixes
 from .persistence import checkpoint, model_file
 from .telemetry.history import read_summaries
 
 # Engine sections that decide which champion a run ends with, beside the game
 # and its settings. Paths, the dashboard, retention and the worker count change
 # how a run is watched or how fast it goes, never its result, so runs that
-# differ only there share a configuration.
+# differ only there share a configuration. The probe's section joins these for
+# a run that had it on; with it off the run plays the game as written, the same
+# as a run from before there was a probe.
 SEARCH_SECTIONS = ("network", "evolution")
 IGNORED_SETTINGS = {"evolution": {"workers"}}
 
@@ -340,6 +343,7 @@ def _model_champion(path: Path) -> Champion:
         architecture=architecture.to_dict(),
         exploration_rate=0.0,
         replay_steps=CONFIG.history.replay_steps,
+        fixes=Fixes.from_dict(document.get("fixes")),
     )
     return Champion(
         run_id=str(source.get("run") or path.stem),
@@ -388,6 +392,7 @@ def run_context(path: Path, meta: dict | None = None) -> EvalContext:
         architecture=meta["architecture"],
         exploration_rate=0.0,
         replay_steps=CONFIG.history.replay_steps,
+        fixes=Fixes.from_dict(meta.get("fixes")),
     )
 
 
@@ -419,7 +424,8 @@ def search_settings(config: dict) -> dict:
         "game": str(config.get("game", "snake")),
         "settings": checkpoint.saved_settings({}, config),
     }
-    for section in SEARCH_SECTIONS:
+    probed = (config.get("probe") or {}).get("enabled")
+    for section in (*SEARCH_SECTIONS, *(("probe",) if probed else ())):
         names = {f.name for f in dataclasses.fields(getattr(CONFIG, section))}
         names -= IGNORED_SETTINGS.get(section, set())
         settings[section] = {
@@ -445,6 +451,8 @@ def describe(settings: dict) -> str:
     _differences(settings.get("settings", {}), defaults["settings"], "", changes)
     for section in SEARCH_SECTIONS:
         _differences(settings.get(section, {}), defaults[section], f"{section}.", changes)
+    if "probe" in settings:
+        _differences(settings["probe"], dataclasses.asdict(CONFIG.probe), "probe.", changes)
     return ", ".join(changes) or "defaults"
 
 

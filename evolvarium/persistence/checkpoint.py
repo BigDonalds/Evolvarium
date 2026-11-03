@@ -46,6 +46,7 @@ from ..events import (
 from ..evolution import speciation
 from ..evolution.individual import Individual, id_number, reserve_ids
 from ..evolution.population import Population
+from ..fixes import Fixes
 from ..nn.network import Architecture, random_genome
 
 FORMAT_VERSION = 4
@@ -121,6 +122,7 @@ def save(population: Population, path: Path) -> CheckpointInfo:
         "encoding": _encoding(population),
         "inputs": list(population.game.observation.names),
         "architecture": population.architecture.to_dict(),
+        "fixes": None if population.fixes is None else population.fixes.to_dict(),
         # Recorded so a finished run can say what produced it. Comparing two runs
         # by launch order alone is a good way to attribute a result to the wrong
         # configuration.
@@ -263,7 +265,7 @@ def load(path: Path, config: Config, seed: int | None = None) -> Population:
         raise CheckpointMismatch(
             f"checkpoint was trained on {game!r}, current configuration plays {config.game!r}"
         )
-    population = Population(config, seed=seed)
+    population = Population(config, seed=seed, fixes=Fixes.from_dict(meta.get("fixes")))
     current = _encoding(population)
     if encoding != current:
         raise CheckpointMismatch(

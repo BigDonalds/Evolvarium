@@ -23,6 +23,7 @@ import numpy as np
 
 from .. import games
 from ..contract import Game
+from ..fixes import FixedGame
 from ..nn.network import Architecture, PolicyNetwork
 from . import model_file
 
@@ -118,7 +119,7 @@ def build_report(
     generation: int,
     genome: np.ndarray | None,
     summaries: list[dict],
-    game: Game,
+    game: Game | FixedGame,
     architecture: Architecture,
     run_id: str,
     destination: Path,
@@ -126,12 +127,14 @@ def build_report(
     """Everything the dashboard shows before an export is confirmed.
 
     `game` is built with the settings the genome was trained under; the model
-    file records its rules. Touches no files.
+    file records its rules. For a game the probe fixed, the names are the
+    game's own and `size` is how many of them the network reads. Touches no files.
     """
     achievements = game.milestones([s for s in summaries if s["generation"] <= generation])
     training = summarise_training(summaries, generation, game.direction)
     unlocked = [a for a in achievements if a.reached]
     inputs = game.model_inputs()
+    base = game.base if isinstance(game, FixedGame) else game
 
     report = {
         "ready": genome is not None,
@@ -147,10 +150,11 @@ def build_report(
         "inputs": {
             "encoding": inputs["encoding"],
             "size": game.observation.size,
-            "names": list(game.observation.names),
+            "names": list(base.observation.names),
             "settings": inputs["settings"],
         },
-        "game": {"name": games.reference(game), **game.model_rules()},
+        "game": {"name": games.reference(base), **game.model_rules()},
+        "fixes": game.fixes.to_dict() if isinstance(game, FixedGame) else None,
         "actions": game.actions.describe(),
         "training": training,
         "achievements": [a.to_dict() for a in achievements],
@@ -180,6 +184,7 @@ def _document(report: dict, genome: np.ndarray, architecture: Architecture) -> d
         game=report["game"],
         source=source,
         report={"training": report["training"], "achievements": report["achievements"]},
+        fixes=report.get("fixes"),
     )
 
 

@@ -80,6 +80,9 @@ class CartPoleGame(Game):
     def steps(self) -> int:
         return self.cart.steps
 
+    def stop(self, stalled: bool) -> None:
+        self.cart.stop()
+
     # -------------------------------------------------------------- results
 
     def signals(self) -> dict[str, float]:

@@ -257,6 +257,10 @@ class Match:
         self.end = cause
         return False
 
+    def stop(self, stalled: bool) -> None:
+        """End the match from outside, as the idle or step limit would."""
+        self._finish(EndCause.IDLE if stalled else EndCause.TIMEOUT)
+
     # -------------------------------------------------------------- seeing
 
     def observe(self, index: int) -> list[float]:

@@ -31,7 +31,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 # A later -m on the command line replaces this one, so `pytest -m slow` runs only those.
 addopts = "-m 'not slow'"
-markers = ["slow: replays a whole held-out block; under a minute"]
+markers = ["slow: replays a whole held-out block or probes every game; a few minutes"]
 
 [tool.ruff]
 line-length = 100

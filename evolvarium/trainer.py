@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shutil
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
-from . import games, settings
+from . import games, probe, settings
 from .config import Config
 from .events import (
     EventBus,
@@ -34,6 +35,7 @@ from .events import (
 )
 from .evolution.pool import EvaluationPool, WorkerBudget, resolve_workers
 from .evolution.population import GenerationReport, Population
+from .fixes import Fixes
 from .persistence import checkpoint
 from .telemetry.history import HistoryStore
 from .web.control import TrainingGate
@@ -55,12 +57,16 @@ class Trainer:
         max_generations: int | None = None,
         budget: WorkerBudget | None = None,
         carry_on: bool = False,
+        probed: probe.Report | None = None,
     ):
         """`carry_on` picks the run called `run_id` up in its own directory.
 
         Its manifest stands, `resume_from` is one of its own checkpoints or None
         to start it again from `seed`, and every generation after that point is
         dropped from its history to be played again.
+
+        `probed` is a probe report already made, for a caller that cannot wait
+        here for one.
         """
         # The game's settings are filled in first, so the manifest records the
         # rules the run actually plays under. Settings that cannot train stop
@@ -70,6 +76,10 @@ class Trainer:
         self.config = config
         if carry_on and run_id is None:
             raise ValueError("carrying a run on needs its run id")
+        # A game that fails the probe stops the run here as well.
+        report = probed
+        if report is None and config.probe.enabled and resume_from is None and not carry_on:
+            report = probe.run_guarded(config)
         self.run_id = run_id or new_run_id()
         self.run_dir = config.paths.runs_dir / self.run_id
         self.checkpoint_dir = self.run_dir / "checkpoints"
@@ -77,9 +87,23 @@ class Trainer:
         if carry_on:
             manifest = _read_manifest(self.run_dir / "run.json")
             self.resumed_from: str | None = manifest.get("resumed_from")
+            fixes = Fixes.from_dict(manifest.get("fixes"))
         else:
-            self._write_manifest(seed, resume_from)
+            # Only a new run is probed. One that goes on from a checkpoint plays the
+            # game that checkpoint was trained on.
+            if resume_from is not None:
+                fixes = Fixes.from_dict(checkpoint.read_meta(resume_from).get("fixes"))
+            else:
+                fixes = None if report is None else report.fixes
+            self._write_manifest(seed, resume_from, fixes)
             self.resumed_from = None if resume_from is None else str(resume_from)
+        probe_path = self.run_dir / "probe.json"
+        if report is not None:
+            probe_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+        elif resume_from is not None and not carry_on:
+            earlier = Path(resume_from).parent.parent / "probe.json"
+            if earlier.is_file():
+                shutil.copyfile(earlier, probe_path)
 
         # Views that subscribe before this point also hear how the run was set
         # up, such as a resume that cannot continue exactly.
@@ -88,6 +112,9 @@ class Trainer:
             viewer_timeout=config.server.viewer_timeout,
             hold_enabled=config.server.hold_when_viewing,
         )
+        if report is not None:
+            for note in report.notes():
+                self.events.publish(Note(note))
 
         if resume_from is not None:
             self.population = checkpoint.load(resume_from, config, seed=seed)
@@ -101,7 +128,7 @@ class Trainer:
                     Note(f"seed {seed} unused: the checkpoint's random state continues")
                 )
         else:
-            self.population = Population(config, seed=seed)
+            self.population = Population(config, seed=seed, fixes=fixes)
 
         self.history = HistoryStore(self.run_dir, config.history)
         if carry_on:
@@ -131,7 +158,9 @@ class Trainer:
         self._abandoned = False
         self._last_report: GenerationReport | None = None
 
-    def _write_manifest(self, seed: int | None, resume_from: Path | None) -> None:
+    def _write_manifest(
+        self, seed: int | None, resume_from: Path | None, fixes: Fixes | None
+    ) -> None:
         """Record what produced this run, before it produces anything.
 
         Checkpoints appear only on records, every 25 generations and at the end,
@@ -145,6 +174,7 @@ class Trainer:
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "resumed_from": str(resume_from) if resume_from else None,
             "config": dataclasses.asdict(self.config),
+            "fixes": None if fixes is None or fixes.empty else fixes.to_dict(),
         }
         path = self.run_dir / "run.json"
         path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")

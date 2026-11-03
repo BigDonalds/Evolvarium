@@ -48,6 +48,11 @@ Version 1 files hold `{"names": [...], "choice": "argmax"}` under actions: one
 choice whose options are the names. This player reads them as that. A file of
 any other version is refused rather than guessed at.
 
+Version 3 is a game whose inputs the engine changed. Its inputs also hold "used",
+"offsets" and "scales", with one number each per input the network reads. The
+names are still every input the game gives, in the order they are passed, and
+the network reads x[k] = (inputs[used[k]] + offsets[k]) * scales[k].
+
 The engine computes in float32 and writes each weight as the exact value of its
 float32. The player starts from the same numbers and computes in float64, so a
 choice can differ only where two outputs come within rounding of each other,
@@ -62,8 +67,10 @@ import sys
 
 FORMAT = "evolvarium-model"
 VERSION = 2
+# Written instead when the network does not read the game's inputs as they are.
+FIXED_INPUTS_VERSION = 3
 # Versions this player reads. Version 1 differs only in how it holds the actions.
-VERSIONS = (1, 2)
+VERSIONS = (1, 2, FIXED_INPUTS_VERSION)
 
 
 class ModelError(ValueError):
@@ -169,6 +176,8 @@ def _check(document: object) -> list:
         raise ModelError("network.layers must be a list with at least one layer")
 
     width = len(input_names)
+    if version == FIXED_INPUTS_VERSION:
+        width = len(_input_fixes(document))
     for index, layer in enumerate(layers):
         where = f"layer {index}"
         if not isinstance(layer, dict):
@@ -177,7 +186,7 @@ def _check(document: object) -> list:
         if not (_count(inputs) and _count(outputs)):
             raise ModelError(f"{where} needs whole numbers of inputs and outputs above zero")
         if inputs != width:
-            given = "the model names" if index == 0 else f"layer {index - 1} gives"
+            given = "the model reads" if index == 0 else f"layer {index - 1} gives"
             raise ModelError(f"{where} takes {inputs} inputs, but {given} {width}")
         activation = layer.get("activation")
         if activation not in ACTIVATIONS:
@@ -201,6 +210,25 @@ def _check(document: object) -> list:
     if width != needed:
         raise ModelError(f"the last layer gives {width} outputs, but the actions read {needed}")
     return parts
+
+
+def _input_fixes(document: dict) -> list[tuple[int, float, float]]:
+    """The column, offset and scale of each input the network of a version 3 file reads."""
+    section = document["inputs"]
+    used, count = section.get("used"), len(section["names"])
+    if not isinstance(used, list) or not used:
+        raise ModelError("inputs.used must be a list of at least one input")
+    for column in used:
+        if (isinstance(column, bool) or not isinstance(column, int)
+                or not 0 <= column < count):
+            raise ModelError(f"inputs.used holds {column!r}, not one of the {count} inputs")
+    for key in ("offsets", "scales"):
+        values = section.get(key)
+        if not isinstance(values, list) or len(values) != len(used):
+            raise ModelError(f"inputs.{key} needs {len(used)} numbers, one per input used")
+        _numbers(values, f"inputs.{key}")
+    return [(column, float(offset), float(scale)) for column, offset, scale
+            in zip(used, section["offsets"], section["scales"], strict=True)]
 
 
 def _single_choice(document: dict) -> list:
@@ -283,6 +311,8 @@ class Player:
         self.parts = tuple(_check(document))
         self.document = document
         self.input_names = tuple(document["inputs"]["names"])
+        self._fixes = (_input_fixes(document) if document["version"] == FIXED_INPUTS_VERSION
+                       else None)
         self._layers = [
             (
                 [[float(w) for w in row] for row in layer["weights"]],
@@ -318,6 +348,9 @@ class Player:
         values = [float(x) for x in inputs]
         if len(values) != len(self.input_names):
             raise ValueError(f"the model takes {len(self.input_names)} inputs, got {len(values)}")
+        if self._fixes is not None:
+            values = [(values[column] + offset) * scale
+                      for column, offset, scale in self._fixes]
         for weights, biases, activation in self._layers:
             layer = []
             for row, bias in zip(weights, biases, strict=True):
@@ -347,6 +380,8 @@ class Player:
         )
         return "\n".join([
             f"{len(self.input_names)} inputs: {', '.join(self.input_names)}",
+            *([f"the network reads {len(self._fixes)} of them, each with an offset and a scale"]
+              if self._fixes is not None else []),
             *(f"action{' ' + part.name if part.name else ''}: {part.summary()}"
               for part in self.parts),
             f"network: {shape}, {self.parameter_count} parameters",
