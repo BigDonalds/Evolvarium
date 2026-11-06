@@ -393,17 +393,20 @@ def test_a_run_shows_what_its_probe_found_and_how_it_was_sized(served):
         "game": games.reference(broken.DeadInputCartPole),
         "settings": {
             "probe.enabled": "true", "probe.episodes": "5", "probe.search_steps": "0",
-            "sizing.minutes": "0.01", "evolution.population_size": "12",
+            "sizing.minutes": "1", "evolution.population_size": "12",
             "evolution.evaluation_episodes": "1", "evolution.elite_count": "2",
             "evolution.immigrant_count": "1",
         },
+        # A probe gets a fifth of the run's time, which a cold start can use up
+        # when the run has seconds. The generation limit ends it long before its minute.
+        "generations": 1,
     })
     assert reply["ok"], reply
     run_id = reply["run"]
     wait_for(lambda: not served.lab.live)
 
     prepared = fetch(served.port, f"/api/preparation?run={run_id}")
-    assert prepared["run"] == run_id and prepared["minutes"] == 0.01
+    assert prepared["run"] == run_id and prepared["minutes"] == 1.0
     dead = [f for f in prepared["probe"]["findings"] if f["kind"] == "dead"]
     assert dead and dead[0]["outcome"] == "fixed"
     assert {row["fate"] for row in prepared["probe"]["inputs"]} == {"kept", "never changes"}
@@ -414,7 +417,7 @@ def test_a_run_shows_what_its_probe_found_and_how_it_was_sized(served):
     status = fetch(served.port, f"/api/status?run={run_id}")
     history = (served.config.paths.runs_dir / run_id / "history.jsonl").read_text()
     played = sum(json.loads(line)["elapsed"] for line in history.splitlines() if line)
-    assert status["minutes"] == 0.01
+    assert status["minutes"] == 1.0
     assert status["spent_seconds"] == pytest.approx(plan["setup_seconds"] + played, abs=0.1)
 
 
