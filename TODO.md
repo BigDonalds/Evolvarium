@@ -29,6 +29,25 @@ Items still open at the baseline are in Snake-AI's
   players stop looking once three of them reach it, and on an endless arena that
   has called `hurt` dead. `probe.search_steps=0` does the same on the clean arena.
 
+## Sizing
+
+- **Sized once, at the start.** A run that turns out slower than its sample
+  suggested reaches fewer generations rather than shrinking. Changing the size
+  part way belongs with self-diagnosis, logged and replayed like its other
+  actions.
+- **One allowance for every game.** Generations cost 1.2 to 8 times what the
+  sample suggests depending on the game and the size, against the 3 assumed, so
+  the generations a plan names are rough.
+- **Breeding, history and dispatch go uncounted.** They cost about the same at any
+  size, so they weigh most on the smallest populations, which measured the most
+  growth on cart-pole even though their episodes grew the least.
+- **Measured at a few minutes only.** The sizes were compared at 15 s on
+  cart-pole, 1 and 2 minutes on the arena and 3 and 5 on Snake, three seeds each
+  and two on Snake at 5.
+- **Snake at 5 minutes.** Sized to 100 × 3, it lost to the default size on the
+  pick on both clean seeds, by 9 and 6 points. More seeds and longer times before
+  trusting it on Snake.
+
 ## Engine
 
 - **One worker in the same process.** `train` with `evolution.workers=1` scores

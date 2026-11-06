@@ -146,6 +146,18 @@ class ProbeConfig:
 
 
 @dataclass(frozen=True)
+class SizingConfig:
+    """Fitting a run to the time someone has for it."""
+
+    # How long the run may take, any probe included. 0 leaves its size as set and
+    # its end to whatever else ends it.
+    minutes: float = 0.0
+    # Generations the size aims to leave time for. The best sizes at a few minutes
+    # reached 30 to 60 generations on Snake.
+    generations: int = 60
+
+
+@dataclass(frozen=True)
 class CheckpointConfig:
     save_every: int = 25
     keep_last: int = 5
@@ -179,6 +191,7 @@ class Config:
     history: HistoryConfig = field(default_factory=HistoryConfig)
     limits: LimitsConfig = field(default_factory=LimitsConfig)
     probe: ProbeConfig = field(default_factory=ProbeConfig)
+    sizing: SizingConfig = field(default_factory=SizingConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     paths: PathConfig = field(default_factory=PathConfig)

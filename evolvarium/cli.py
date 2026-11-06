@@ -56,6 +56,9 @@ SHORTHANDS = {
                          "share of offspring built from two parents"),
     "--workers": ("evolution.workers", int,
                   "evaluation worker processes; 0 uses every core but one, 1 is serial"),
+    "--minutes": ("sizing.minutes", float,
+                  "fit the run to this much time and end it there; settings given by name "
+                  "stay as given"),
     "--port": ("server.port", int, "dashboard port"),
 }
 
@@ -86,8 +89,8 @@ def _game_config(game: str | None) -> Config:
     return dataclasses.replace(CONFIG, game=game, settings=None)
 
 
-def _configure(args: argparse.Namespace) -> Config:
-    """The configuration the train command asks for, refused if it cannot train as asked."""
+def _assignments(args: argparse.Namespace) -> list[tuple[str, object]]:
+    """Every setting the train command names, as the flag or `--set` gave it."""
     assignments = []
     for flag, (name, _, _) in SHORTHANDS.items():
         value = getattr(args, flag[2:].replace("-", "_"))
@@ -96,7 +99,12 @@ def _configure(args: argparse.Namespace) -> Config:
     if args.no_hold:
         assignments.append(("server.hold_when_viewing", False))
     assignments.extend(args.set or [])
+    return assignments
 
+
+def _configure(args: argparse.Namespace) -> Config:
+    """The configuration the train command asks for, refused if it cannot train as asked."""
+    assignments = _assignments(args)
     config = settings.apply(_game_config(args.game), assignments)
     problems = []
     try:
@@ -187,6 +195,7 @@ def command_train(args: argparse.Namespace) -> int:
             resume_from=resume_from,
             events=events,
             max_generations=args.generations,
+            named=[name for name, _ in _assignments(args)],
         )
     except checkpoint.CheckpointMismatch as error:
         print(f"  cannot resume: {error}")

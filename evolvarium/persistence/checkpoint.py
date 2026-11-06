@@ -408,7 +408,7 @@ class CheckpointWriter:
                     prune(self.directory, self.config.keep_last)
             case RecordSet():
                 self.save_latest("record")
-            case RunFinished(reason="limit" | "stopped"):
+            case RunFinished(reason="limit" | "budget" | "stopped"):
                 # A run that set a record in its last generation already has it.
                 if self._latest_generation != self.population.generation:
                     self.save_latest("final")

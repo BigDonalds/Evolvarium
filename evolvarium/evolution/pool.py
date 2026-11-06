@@ -73,6 +73,16 @@ class WorkerBudget:
         with self._lock:
             self._wanted.pop(key, None)
 
+    def preview(self, wanted: int = 0) -> int:
+        """The share a job wanting `wanted` workers would get if it joined now."""
+        with self._lock:
+            key = object()
+            self._wanted[key] = max(0, wanted)
+            try:
+                return self._shares()[key]
+            finally:
+                del self._wanted[key]
+
     def share(self, key: str) -> int:
         """The workers `key` may use now, which changes as other jobs join and leave."""
         with self._lock:

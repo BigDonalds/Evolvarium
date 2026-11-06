@@ -10,6 +10,141 @@ directly.
 
 ---
 
+## Run sizing - fitting a run to the time someone has
+
+A run had one size, 150 genomes playing 4 games each, however long whoever
+started it could wait. On Snake that is 3 to 10 s a generation at the start and
+50 to 136 s by generation 150, so a few minutes buy a couple of dozen
+generations at that size. Nothing asked how long someone had, and nothing ended a
+run when the time ran out.
+
+`--minutes`, or `sizing.minutes` on the dashboard's form, says it now. At 0, the
+default, a run is what it was.
+
+**Measuring.** Before the run, untrained networks play a sample of games on the
+workers the run will have, on seeds from 650000, a block of its own that only
+ever affects the timing. The workers start on the first batch, which is left out
+of the time, and the sample stops after 450 games or 3% of the run's time, kept
+between 1 and 15 s. A game so slow that the first batch uses all of that is timed
+on that batch. On seven workers here, an untrained game took 0.44 to 0.58 ms on
+cart-pole, 1.2 to 1.4 ms on the arena and 4.4 to 5.2 ms on Snake, and getting
+ready, sample and all, took under a second on the first two and 2.4 to 2.8 s on
+Snake.
+
+**Sizing.** The run gets the largest of four sizes, 50 genomes with 2 games each,
+100 with 2, 100 with 3 and the defaults, that leaves time for
+`sizing.generations` generations, 60 by default, taking a generation to cost
+three times what the sample's games suggest. When even the smallest can't, the
+run takes it and says how many generations it leaves time for. A setting given
+by name stays as given and the size fits around it, so a population given by
+name leaves only the games per genome to choose. Elites and immigrants not given
+by name keep their share of the population. A probe on the same run gets at most
+a fifth of the time, and its time and the sample's both come out of what the run
+has. Sizing only sets the size: a sized run and one given that size by hand are
+the same run, generation for generation. On this machine a run keeps the default
+size from about 9 minutes on Snake, 2.3 on the arena and 1 on cart-pole.
+
+**Ending on time.** Before each generation the trainer adds the last
+generation's time to what the run has spent, and ends the run if the total would
+pass the minutes. Every run plays at least one generation however long it took
+to get ready, and time held for someone watching on the dashboard doesn't count.
+A run carried on after a restart takes up the time it had spent, from its
+manifest and its history, so one whose time is gone ends at once, while
+`--resume` starts a new stretch with minutes of its own. A run ended this way
+says its minutes are up, keeps a checkpoint of its last generation and counts as
+finished, like one that reached its generation limit. `run.json` keeps the plan,
+with what the sample measured and the settings left as asked.
+
+**Not the workers.** The proposal had the worker count sized too. Timing 240
+untrained games of each built-in game on 2 to 8 workers found every worker up to
+seven making them faster: from 13.6 ms a game on 2 workers to 3.6 ms on 7 on
+Snake, 3.5 to 1.0 ms on the arena and 0.95 to 0.36 ms on cart-pole, with the
+workers ready in under 0.4 s each time. There is nothing to choose, and a run
+keeps every core but one as before.
+
+**Which size, at a fixed time.** Five sizes were run at one time per game, three
+seeds each, 11 to 13, and the best-average pick of each run was scored on the 60
+development games from 700000. Each run measured its own sample and spent its
+time as a sized run does, so only the size differed.
+
+| size | cart-pole, 15 s | arena, 1 minute | Snake, 3 minutes |
+|---|---:|---:|---:|
+| 30 × 2 | 500.0 | 45.3 | 35.9 |
+| 50 × 2 | 500.0 | 67.2 | 45.9 |
+| 100 × 2 | 500.0 | 74.9 | 45.7 |
+| 100 × 3 | 500.0 | 50.4 | 49.7 |
+| 150 × 4 | 500.0 | 41.8 | 31.8 |
+
+Cart-pole has nothing to say: every run of every size balanced all 60 games
+within 15 s. On the other two the defaults did worst or close to it, and so did
+the smallest size, while the sizes between are within each other's noise. The
+arena's picks spread over 20 points or more between seeds at one size. The first
+version of the rule aimed at 150 generations with 30 × 2 as its smallest size,
+and it chose 30 × 2 on Snake and 30 × 2 or 50 × 2 on the arena. The best sizes
+had reached 30 to 60 generations on Snake and 150 to 280 on the arena, so 30 × 2
+went, and the generations wanted came down to 60. From these samples that picks
+100 × 2 on the arena and 50 × 2 on Snake.
+
+**Checked on fresh seeds.** That rule came from the runs it is judged on, so it
+ran again on seeds 14 to 16 at other times, the arena at 2 minutes and Snake at
+5, against the default size given the same time.
+
+| | size | generations | stored champion | best-average pick |
+|---|---|---:|---:|---:|
+| arena, sized | 100 × 3, once 150 × 4 | 155 | 51.4 | 72.6 |
+| arena, default | 150 × 4 | 109 | 39.3 | 56.9 |
+| Snake, sized | 100 × 3 | 38 | 29.3 | 30.2 |
+| Snake, default | 150 × 4 | 26 | 25.3 | 37.5 |
+
+On the arena, seed 14's sample came out just fast enough to leave room for 61
+generations at the default size, so sizing kept it and that pair came out
+identical. On the other two seeds it chose 100 × 3 and won by 31 and 16 points on
+the pick. On Snake it lost on the pick on both seeds that count, by 9 and 6
+points, and won on the stored champion on one of them. The Snake figures leave
+out seed 16: the laptop came off mains power part way through that pair, and its
+steps took 88 to 106 µs against 23 to 35 µs in every other Snake run of the
+session, unevenly between the two. So sizing helps the arena at a couple of
+minutes, and at 5 minutes on Snake it isn't shown to help and may hurt, which two
+seeds can't settle. It stays off unless asked for.
+
+**What it can't see.** The sample is untrained play, and generations get dearer
+as players get better. Over these runs a generation cost 1.2 to 1.8 times what
+the sample suggested on the arena, 2.2 to 3.3 on cart-pole and 2.5 to 10 on
+Snake, more the smaller the population, since a small one plays more
+generations and gets further. Breeding, history and dispatch cost the same at
+any size and go uncounted, which is part of why the smallest populations showed
+the most on cart-pole. So the generations a plan names are rough: Snake at 50 × 2
+was planned for 115 to 134 in 3 minutes and reached 51 to 64. The size is chosen
+once, and a run that turns out slower reaches fewer generations. Only the time is
+kept exactly. TODO.md has these.
+
+**Checking it.** `tests/test_sizing.py` is new, with 45 tests. They cover the
+largest size that fits being chosen, the largest when there is time to spare and
+the smallest when nothing fits, sizes fitted around a population or games given
+by name, elites and immigrants keeping their share or staying as given, and sizes
+that leave no room for offspring or the tournament being left out. A plan follows
+what the sample measured, a probe's time comes out of the run's, and a plan names
+what it left alone and says when the time won't stretch. The sample times real
+games on real workers and ends on time on a slow game, and a game that fails in it
+stops the run before the run has a directory. A sized run matches one given the
+size by hand generation for generation, a run with no minutes isn't sized, and the
+manifest and the log carry the plan. Every run plays one generation, a run ends
+before one that wouldn't fit, keeps its last checkpoint and says so, a generation
+limit still ends a run with time left, time held for a viewer doesn't count, and a
+run carried on counts what it had spent while `--resume` starts afresh. A probe
+gets its share of the time and the run is sized on the game as the probe fixed it.
+Settings, the command line and the dashboard round it off, the dashboard marking a
+run finished when its time is up and reporting a game that fails in the sample.
+The held-out replay of the model in `models/` still matches its record game for
+game. The whole suite, 684 passed and 2 skipped, took 232 s on battery, and the
+new tests about 17 s of that. The 25 slow tests took 334 s.
+
+**How long it took.** The 45 runs at five sizes took about an hour and a half
+with their scoring, and the 12 on fresh seeds just under an hour, all on seven
+workers.
+
+---
+
 ## The probe - measuring a game before anything trains on it
 
 A game with something wrong with it still trains, only worse, and nothing in the

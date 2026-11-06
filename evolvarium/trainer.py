@@ -17,10 +17,11 @@ import json
 import shutil
 import threading
 import time
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
-from . import games, probe, settings
+from . import games, probe, settings, sizing
 from .config import Config
 from .events import (
     EventBus,
@@ -58,6 +59,8 @@ class Trainer:
         budget: WorkerBudget | None = None,
         carry_on: bool = False,
         probed: probe.Report | None = None,
+        sized: sizing.Plan | None = None,
+        named: Iterable[str] = (),
     ):
         """`carry_on` picks the run called `run_id` up in its own directory.
 
@@ -65,21 +68,37 @@ class Trainer:
         to start it again from `seed`, and every generation after that point is
         dropped from its history to be played again.
 
-        `probed` is a probe report already made, for a caller that cannot wait
-        here for one.
+        `probed` and `sized` are a probe report and a size already worked out, for
+        a caller that cannot wait here for them. `named` holds the settings someone
+        asked for by name, which sizing leaves as they are.
         """
         # The game's settings are filled in first, so the manifest records the
         # rules the run actually plays under. Settings that cannot train stop
         # the run here, before it has a directory.
         config = games.resolve(config)
         settings.check(config)
-        self.config = config
         if carry_on and run_id is None:
             raise ValueError("carrying a run on needs its run id")
-        # A game that fails the probe stops the run here as well.
+        # Only a new run is probed and sized. One that goes on from a checkpoint
+        # plays the game, at the size, that checkpoint was trained on.
+        fresh = resume_from is None and not carry_on
+        # A game that fails the probe or the sizing stops the run here as well.
         report = probed
-        if report is None and config.probe.enabled and resume_from is None and not carry_on:
-            report = probe.run_guarded(config)
+        if report is None and config.probe.enabled and fresh:
+            report = probe.run_guarded(sizing.with_probe_limit(config))
+        plan = sized
+        if plan is None and config.sizing.minutes > 0 and fresh:
+            plan = sizing.plan(
+                config,
+                fixes=None if report is None else report.fixes,
+                named=named,
+                workers=resolve_workers(config.evolution.workers),
+                probe_seconds=0.0 if report is None else report.seconds,
+            )
+        if plan is not None:
+            config = plan.apply(config)
+            settings.check(config)
+        self.config = config
         self.run_id = run_id or new_run_id()
         self.run_dir = config.paths.runs_dir / self.run_id
         self.checkpoint_dir = self.run_dir / "checkpoints"
@@ -89,13 +108,11 @@ class Trainer:
             self.resumed_from: str | None = manifest.get("resumed_from")
             fixes = Fixes.from_dict(manifest.get("fixes"))
         else:
-            # Only a new run is probed. One that goes on from a checkpoint plays the
-            # game that checkpoint was trained on.
             if resume_from is not None:
                 fixes = Fixes.from_dict(checkpoint.read_meta(resume_from).get("fixes"))
             else:
                 fixes = None if report is None else report.fixes
-            self._write_manifest(seed, resume_from, fixes)
+            self._write_manifest(seed, resume_from, fixes, plan)
             self.resumed_from = None if resume_from is None else str(resume_from)
         probe_path = self.run_dir / "probe.json"
         if report is not None:
@@ -114,6 +131,9 @@ class Trainer:
         )
         if report is not None:
             for note in report.notes():
+                self.events.publish(Note(note))
+        if plan is not None:
+            for note in plan.notes():
                 self.events.publish(Note(note))
 
         if resume_from is not None:
@@ -134,6 +154,16 @@ class Trainer:
         if carry_on:
             self.history.truncate(self.population.generation)
         self.history.attach(self.events)
+        # What the run's time has gone on, which leaves out holds. Picked up where
+        # it was by a run carried on, while `--resume` is a new stretch with its own.
+        if carry_on:
+            recorded = manifest.get("sizing") or {}
+            self._spent = float(recorded.get("setup_seconds", 0.0)) + sum(
+                float(summary.get("elapsed", 0.0)) for summary in self.history.summaries()
+            )
+        else:
+            self._spent = 0.0 if plan is None else plan.setup_seconds
+        self._last_generation_seconds = 0.0
         self.checkpoints = checkpoint.CheckpointWriter(
             self.population, self.checkpoint_dir, config.checkpoint
         )
@@ -159,7 +189,8 @@ class Trainer:
         self._last_report: GenerationReport | None = None
 
     def _write_manifest(
-        self, seed: int | None, resume_from: Path | None, fixes: Fixes | None
+        self, seed: int | None, resume_from: Path | None, fixes: Fixes | None,
+        plan: sizing.Plan | None,
     ) -> None:
         """Record what produced this run, before it produces anything.
 
@@ -175,6 +206,7 @@ class Trainer:
             "resumed_from": str(resume_from) if resume_from else None,
             "config": dataclasses.asdict(self.config),
             "fixes": None if fixes is None or fixes.empty else fixes.to_dict(),
+            "sizing": None if plan is None else plan.to_dict(),
         }
         path = self.run_dir / "run.json"
         path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
@@ -257,14 +289,33 @@ class Trainer:
         while not self._stop.is_set():
             if self.max_generations is not None and population.generation >= self.max_generations:
                 return "limit"
+            if self._time_is_up():
+                self.events.publish(Note(
+                    f"{self.config.sizing.minutes:g} minutes are up, so the run ends "
+                    f"after generation {population.generation - 1}"
+                ))
+                return "budget"
             self._fit_pool()
+            began = time.perf_counter()
             self._run_one_generation()
+            self._last_generation_seconds = time.perf_counter() - began
+            self._spent += self._last_generation_seconds
             self.gate.wait_at_boundary(
                 population.generation,
                 on_hold=lambda generation: self.events.publish(Held(generation)),
                 on_resume=lambda generation, why: self.events.publish(Resumed(generation, why)),
             )
         return "stopped"
+
+    def _time_is_up(self) -> bool:
+        """Whether another generation like the last would run past the run's time.
+
+        Every run plays at least one generation, however long getting ready took.
+        """
+        minutes = self.config.sizing.minutes
+        if minutes == 0 or self.population.generation == 0:
+            return False
+        return self._spent + self._last_generation_seconds > minutes * 60.0
 
     def _run_one_generation(self) -> None:
         population = self.population

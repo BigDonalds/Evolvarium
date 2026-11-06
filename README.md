@@ -163,6 +163,22 @@ episode the probe's limits cut short, as the built-in games do. The players bein
 weak is also the probe's limit: an input that only moves or grows once a player
 is good looks dead or well scaled to them.
 
+`--minutes`, or `sizing.minutes` on the dashboard's form, fits a run to that much
+time and ends it there:
+
+```bash
+python -m evolvarium train --game arena --minutes 5
+```
+
+Untrained networks play a sample of games on the run's workers first, a few
+seconds at most, and the run gets the largest of four sizes, from 50 genomes
+playing 2 games each up to the defaults, that leaves time for
+`sizing.generations` generations, 60 by default. A setting given by name stays as
+given, and the size fits around it. The run ends before a generation that would
+not fit, counting a probe and the sample but not time held for someone watching,
+and a run carried on after a restart counts the time it had already spent. A
+sized run is the same run as one given that size by hand.
+
 A game that declares a `scene` can be watched on the dashboard. The scene lists
 layers of cells, dots, boxes or lines and labels such as the score, and `draw`
 returns each layer's items and each label's value after every step of a recorded

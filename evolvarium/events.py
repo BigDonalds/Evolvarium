@@ -116,10 +116,11 @@ class Note(Event):
 class RunFinished(Event):
     """The loop has ended.
 
-    `reason` is "limit", "stopped", "abandoned" or "error". Abandoned means the
-    workers were shut down under a generation that had been told to stop. After
-    that or an error the population may be part way through a generation, so
-    nothing should be saved from it.
+    `reason` is "limit", "budget", "stopped", "abandoned" or "error". Budget means
+    the time in `sizing.minutes` is up. Abandoned means the workers were shut down
+    under a generation that had been told to stop. After that or an error the
+    population may be part way through a generation, so nothing should be saved
+    from it.
     """
 
     kind: ClassVar[str] = "run_finished"

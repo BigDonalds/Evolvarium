@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .. import games, probe, settings
+from .. import games, probe, settings, sizing
 from ..config import CONFIG, SECTIONS, Config, HistoryConfig
 from ..contract import load_settings
 from ..events import Event, EventBus, GenerationEvaluated, Note, RunFinished
@@ -691,7 +691,7 @@ class Lab:
         One stopped by the dashboard's own end is left training, and that is
         what has the next dashboard carry it on.
         """
-        if event.reason == "limit":
+        if event.reason in ("limit", "budget"):
             self._write_job(run.run_id, state="finished")
         elif event.reason == "error":
             self._write_job(run.run_id, state="failed", error=event.error)
@@ -785,14 +785,26 @@ class Lab:
         from ..trainer import Trainer
 
         report = None
-        if config.probe.enabled:
+        plan = None
+        named = [name for name, _ in pairs]
+        if config.probe.enabled or config.sizing.minutes > 0:
             with self._lock:
                 refused = self._cannot_start()
             if refused:
                 return {"problems": [refused]}
-            # Outside the lock: the other runs should not wait on this one's probe.
+            # Outside the lock: the other runs should not wait on this one's probe
+            # or its sizing.
             try:
-                report = probe.run_guarded(config)
+                if config.probe.enabled:
+                    report = probe.run_guarded(sizing.with_probe_limit(config))
+                if config.sizing.minutes > 0:
+                    plan = sizing.plan(
+                        config,
+                        fixes=None if report is None else report.fixes,
+                        named=named,
+                        workers=self.budget.preview(config.evolution.workers),
+                        probe_seconds=0.0 if report is None else report.seconds,
+                    )
             except (GameFault, WorkerError) as error:
                 return {"problems": [str(error)]}
 
@@ -805,7 +817,7 @@ class Lab:
             try:
                 trainer = Trainer(
                     config, run_id=self._new_id(), seed=seed, events=EventBus(),
-                    max_generations=generations, budget=self.budget, probed=report,
+                    max_generations=generations, budget=self.budget, probed=report, sized=plan,
                 )
             except (OSError, ValueError) as error:
                 return {"problems": [f"{type(error).__name__}: {error}"]}

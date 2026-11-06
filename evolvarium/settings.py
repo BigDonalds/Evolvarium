@@ -301,6 +301,8 @@ def _unused(config: Config, dashboard: bool) -> dict[str, str]:
         for name in _names(config.probe):
             if name != "enabled":
                 unused[f"probe.{name}"] = "probe.enabled is false"
+    if config.sizing.minutes == 0:
+        unused["sizing.generations"] = "sizing.minutes is 0"
     if not dashboard:
         for name in _names(config.server):
             unused[f"server.{name}"] = "the run has no dashboard"
@@ -370,6 +372,9 @@ def _problems(config: Config, unused: dict[str, str]) -> Problems:
         problems.at_least("probe.search_steps", config.probe.search_steps, 0)
         problems.above("probe.seconds", config.probe.seconds, 0)
         problems.at_least("probe.ceiling", config.probe.ceiling, 2)
+    problems.at_least("sizing.minutes", config.sizing.minutes, 0)
+    if "sizing.generations" not in unused:
+        problems.at_least("sizing.generations", config.sizing.generations, 1)
     problems.at_least("checkpoint.save_every", config.checkpoint.save_every, 0)
     if "checkpoint.keep_last" not in unused:
         problems.at_least("checkpoint.keep_last", config.checkpoint.keep_last, 0)
