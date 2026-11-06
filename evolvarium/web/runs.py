@@ -172,6 +172,30 @@ class RunView:
             "scene": self.scene,
         }
 
+    def preparation(self) -> dict:
+        """What the run did before its first generation: its probe and its sizing.
+
+        `minutes` is the time the run was given, which a run resumed with
+        `--resume` can have without a plan of its own.
+        """
+        report = _read_json(self.run_dir / "probe.json")
+        return {
+            "run": self.run_id,
+            "probe": report,
+            "sizing": self.manifest.get("sizing"),
+            "minutes": self.minutes,
+        }
+
+    @property
+    def minutes(self) -> float:
+        recorded = self.manifest.get("config")
+        sizing = recorded.get("sizing") if isinstance(recorded, dict) else None
+        return float((sizing or {}).get("minutes", 0.0))
+
+    @property
+    def setup_seconds(self) -> float:
+        return float((self.manifest.get("sizing") or {}).get("setup_seconds", 0.0))
+
     def checkpoints(self) -> dict:
         found = checkpoint.list_checkpoints(self.run_dir / "checkpoints")
         return {"checkpoints": [c.to_dict() for c in found]}
@@ -458,6 +482,8 @@ class SavedRun(RunView):
             "generations_per_minute": (
                 round(len(summaries) / (seconds / 60.0), 2) if seconds > 1 else 0.0
             ),
+            "minutes": self.minutes,
+            "spent_seconds": round(self.setup_seconds + seconds, 1),
             "episodes_per_second": round(episodes / seconds, 1) if seconds > 1 else 0.0,
             "game": self.game_name,
             "direction": self.direction,

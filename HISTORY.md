@@ -10,6 +10,58 @@ directly.
 
 ---
 
+## The probe's report on the page
+
+The probe and the sizing each said what they did in the run's log and in files
+beside it, `probe.json` and the plan in `run.json`, and the dashboard showed
+neither. Someone starting a run from the page saw the notes go by and nothing
+after.
+
+**Before training.** A panel below the export and the run detail now shows both
+for the run on screen, from `GET /api/preparation`. The probe's half has the
+line the console starts with, its findings, every input with what it read before
+and after the fixes and what became of it, and how each kind of player's
+episodes went. Inputs the probe changed are shaded. The sizing half has the time,
+what the sample measured, the size it chose, the elites and immigrants carried
+over, the generations it left room for and how long getting ready took, with any
+settings left as asked. A run resumed with `--resume` and minutes of its own has
+no plan, and the panel says its size came from the run it went on from. A run
+with neither says how to turn them on. For a run with minutes, the run detail
+adds the time used against the time given, which both kinds of run now report in
+their status: from the trainer while it trains, and from the plan and the history
+once it is on disk.
+
+**What each finding did.** A finding's text says what the probe did, but nothing
+else did, so the page couldn't tell a fix from a warning. Each finding now has an
+outcome: fixed when the probe changed the game for it, left when only the game's
+author can fix it, and noted when nothing is wrong. Inputs that never change and
+are dropped, copies, inputs out of scale, games that ignore their seed and could
+be seeded, and episodes with no end are fixed. Opposites, two yes-or-no inputs
+that flip together without being copies, are noted. The rest, from rare rewards
+to slow steps, are left. The page draws fixed findings in cobalt, the colour of
+the run's own actions, left ones in red and noted ones in grey. A `probe.json`
+written before this has no outcomes: read back, its findings count as left, and
+the page shows them in grey rather than guess.
+
+**Checking it.** `tests/test_server.py` gains three tests. A run started from the
+page with the probe and minutes shows its dead inputs as fixed, its inputs'
+fates, its plan with the population kept as asked, and time used equal to getting
+ready plus its generations. A run with neither answers with neither, and a run
+resumed with minutes of its own has its minutes and no plan. The test that a
+saved run answers with the same fields as a live one covers the two new ones in
+the status. `tests/test_probe.py` gains six: five of cart-pole's faults marked
+fixed, and an older report reading as left. The tests of clean games, needs_stop,
+slow, few_steps and rare findings now check their outcomes too. The whole suite,
+693 passed and 2 skipped, took 175 s on battery, and the 25 slow tests 193 s.
+
+The panel was checked in the browser on three runs: a broken cart-pole probed and
+given 18 s, an untouched cart-pole, and a probed Snake with its inputs out of
+scale, at 1440 px wide and at 375. At the narrow width it falls to one column and
+its tables scroll inside their own box, and the page is never wider than the
+screen.
+
+---
+
 ## Run sizing - fitting a run to the time someone has
 
 A run had one size, 150 genomes playing 4 games each, however long whoever

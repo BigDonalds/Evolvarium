@@ -15,9 +15,10 @@ import types
 import numpy as np
 import pytest
 
-from evolvarium import held_out
+from evolvarium import games, held_out
 from evolvarium.config import CONFIG
 from evolvarium.events import GenerationEvaluated
+from evolvarium.games import broken
 from evolvarium.games.snake.game import SnakeGame
 from evolvarium.games.snake.settings import BoardConfig, EpisodeConfig, SnakeSettings
 from evolvarium.persistence import export_model, jobs, model_file
@@ -385,6 +386,55 @@ def test_a_live_run_offers_its_newest_genomes_first(served):
         assert order[0] == 0 < max(a for a in order if a != math.inf)
     finally:
         served.lab.retire(live)
+
+
+def test_a_run_shows_what_its_probe_found_and_how_it_was_sized(served):
+    reply = post(served.port, "/api/runs/start", {
+        "game": games.reference(broken.DeadInputCartPole),
+        "settings": {
+            "probe.enabled": "true", "probe.episodes": "5", "probe.search_steps": "0",
+            "sizing.minutes": "0.01", "evolution.population_size": "12",
+            "evolution.evaluation_episodes": "1", "evolution.elite_count": "2",
+            "evolution.immigrant_count": "1",
+        },
+    })
+    assert reply["ok"], reply
+    run_id = reply["run"]
+    wait_for(lambda: not served.lab.live)
+
+    prepared = fetch(served.port, f"/api/preparation?run={run_id}")
+    assert prepared["run"] == run_id and prepared["minutes"] == 0.01
+    dead = [f for f in prepared["probe"]["findings"] if f["kind"] == "dead"]
+    assert dead and dead[0]["outcome"] == "fixed"
+    assert {row["fate"] for row in prepared["probe"]["inputs"]} == {"kept", "never changes"}
+    plan = prepared["sizing"]
+    assert plan["population"] == 12 and plan["episodes"] == 1
+    assert "evolution.population_size" in plan["kept"]
+
+    status = fetch(served.port, f"/api/status?run={run_id}")
+    history = (served.config.paths.runs_dir / run_id / "history.jsonl").read_text()
+    played = sum(json.loads(line)["elapsed"] for line in history.splitlines() if line)
+    assert status["minutes"] == 0.01
+    assert status["spent_seconds"] == pytest.approx(plan["setup_seconds"] + played, abs=0.1)
+
+
+def test_a_run_neither_probed_nor_sized_says_so(served):
+    prepared = fetch(served.port, "/api/preparation?run=served")
+    assert prepared == {"run": "served", "probe": None, "sizing": None, "minutes": 0.0}
+    status = fetch(served.port, "/api/status?run=served")
+    assert status["minutes"] == 0.0
+
+
+def test_a_run_resumed_with_time_of_its_own_has_no_plan_but_its_minutes(served):
+    first = served.config.paths.runs_dir / "served" / "checkpoints" / "latest.npz"
+    config = dataclasses.replace(served.config, sizing=dataclasses.replace(
+        served.config.sizing, minutes=5.0))
+    train_from = Trainer(config, run_id="resumed", resume_from=first, max_generations=3)
+    train_from.start()
+    train_from.join()
+    train_from.stop()
+    prepared = fetch(served.port, "/api/preparation?run=resumed")
+    assert prepared["sizing"] is None and prepared["minutes"] == 5.0
 
 
 def test_a_run_whose_game_no_longer_loads_is_still_listed(served):

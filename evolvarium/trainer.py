@@ -400,6 +400,8 @@ class Trainer:
             "scene": population.scene,
             "resumed_from": self.resumed_from,
             "workers": self.workers,
+            "minutes": self.config.sizing.minutes,
+            "spent_seconds": round(self._spent, 1),
             "last_generation": report.to_dict() if report else None,
             "gate": self.gate.state().to_dict(),
         }

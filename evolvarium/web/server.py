@@ -22,6 +22,7 @@ Endpoints
     POST /api/heartbeat               viewer presence, keeps the hold lease alive
     POST /api/control                 hold / continue / run free
     GET  /api/checkpoints             checkpoints on disk
+    GET  /api/preparation             the run's probe report and how it was sized
     GET  /api/export/preview?n=N      export report for the champion, writes nothing
     POST /api/export/choose           start choosing a genome by its average
     GET  /api/export/job?id=ID        how far a choice has got, and its report
@@ -353,6 +354,8 @@ def _make_handler(server: DashboardServer):
                     self._json(server.view(run).generation(number("n")))
                 elif route == "/api/checkpoints":
                     self._json(server.view(run).checkpoints())
+                elif route == "/api/preparation":
+                    self._json(server.view(run).preparation())
                 elif route == "/api/export/preview":
                     self._json(lab.preview(server.view(run), number("n")))
                 elif route == "/api/export/job":

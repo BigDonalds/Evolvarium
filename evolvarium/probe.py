@@ -107,12 +107,17 @@ _RARE_EPISODES = 20
 
 @dataclass(frozen=True)
 class Finding:
-    """One thing the probe found, what it did about it and the inputs concerned."""
+    """One thing the probe found, what it did about it and the inputs concerned.
+
+    `outcome` is "fixed" when the probe changed the game for it, "left" when it is
+    a problem only the game's author can fix, and "noted" when nothing is wrong.
+    """
 
     kind: str
     found: str
     did: str
     inputs: tuple[str, ...] = ()
+    outcome: str = "left"
 
 
 @dataclass(frozen=True)
@@ -176,7 +181,8 @@ class Report:
             inputs=tuple(InputRow(**row) for row in data["inputs"]),
             players=tuple(PlayerRow(**row) for row in data["players"]),
             findings=tuple(
-                Finding(row["kind"], row["found"], row["did"], tuple(row["inputs"]))
+                Finding(row["kind"], row["found"], row["did"], tuple(row["inputs"]),
+                        row.get("outcome", "left"))
                 for row in data["findings"]
             ),
             fixes=Fixes.from_dict(data["fixes"]) or Fixes(),
@@ -553,6 +559,7 @@ def _examine_inputs(inputs: _Inputs, earlier: _Inputs, observation: Observation,
             f"Dropped {'it' if len(dead) == 1 else 'them'}. "
             f"The network reads {kept} inputs instead of {observation.size}.",
             tuple(names[c] for c in dead),
+            outcome="fixed",
         ))
         for c in dead:
             fates[c] = "never changes"
@@ -565,6 +572,7 @@ def _examine_inputs(inputs: _Inputs, earlier: _Inputs, observation: Observation,
             f"Dropped the repeat{'' if len(repeats) == 1 else 's'}. "
             f"The network reads {kept} inputs instead of {observation.size}.",
             tuple(names[c] for c in sorted(repeats)),
+            outcome="fixed",
         ))
         for c in repeats:
             fates[c] = f"repeats {names[repeats[c]]}"
@@ -576,6 +584,7 @@ def _examine_inputs(inputs: _Inputs, earlier: _Inputs, observation: Observation,
             "never did, so that does not make them copies.",
             "Kept both.",
             (names[first], names[second]),
+            outcome="noted",
         ))
 
     scaled: dict[int, tuple[float, float]] = {}
@@ -596,6 +605,7 @@ def _examine_inputs(inputs: _Inputs, earlier: _Inputs, observation: Observation,
             f"{'it' if len(scaled) == 1 else 'each'} by fixed numbers, "
             "to read within -1 to 1.",
             tuple(names[c] for c in scaled),
+            outcome="fixed",
         ))
 
     kept_columns = [c for c in range(observation.size) if c not in dropped]
@@ -941,6 +951,7 @@ class _Probe:
                 f"{where}. The seed does not decide the episode.",
                 "Seeded the random generators the game holds at the start of every "
                 "episode, and the same seed then gave the same episode.",
+                outcome="fixed",
             ))
             return True
         findings.append(Finding(
@@ -1003,6 +1014,7 @@ class _Probe:
                 f"{cut} of {complete} episodes {'was' if cut == 1 else 'were'} still going "
                 f"after {ceiling:,} steps, so nothing in the game is sure to end one.",
                 limit,
+                outcome="fixed",
             ))
 
         input_fixes = _examine_inputs(measured.inputs, first.inputs, observation, findings)
@@ -1033,6 +1045,7 @@ class _Probe:
                     "steps, so nothing in the game is sure to end one.",
                     f"Episodes now end after {ceiling:,} steps. That is only where the probe "
                     "stopped waiting, and probe.ceiling can raise it.",
+                    outcome="fixed",
                 ))
 
         rare = _rare_reward(measured.played)

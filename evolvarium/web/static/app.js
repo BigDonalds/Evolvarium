@@ -66,6 +66,7 @@ const state = {
   exportHint: "",        // the export panel's text before there is a report
   championReport: null,  // export preview of the champion
   job: null,             // a choice by average for the run shown
+  preparation: null,     // the run's probe report and sizing plan
   gamesLoaded: false,
   settings: { game: null, rows: [], inputs: new Map() },
   compare: new Map(),    // run id -> colour slot
@@ -261,6 +262,7 @@ function show(runId, chosen) {
   state.maxFrames = 0;
   state.championReport = null;
   state.job = null;
+  state.preparation = null;
   clearTimeout(jobTimer);
   disarmStop();
 
@@ -274,6 +276,7 @@ function show(runId, chosen) {
   renderChart();
   renderExport();
   renderJob();
+  renderPreparation();
   syncScrubber();
   renderRunPicker();
 
@@ -287,6 +290,7 @@ function show(runId, chosen) {
   pollStatus();
   loadCurve();
   attachJob();
+  loadPreparation();
 }
 
 function renderEmpty() {
@@ -467,11 +471,112 @@ function renderRunDetail(status) {
     ["Stagnation", `${fmt.int(status.stagnation)} gens`],
     ["Workers", status.workers ?? "–"],
   ];
+  if (status.minutes > 0) {
+    rows.push(["Time used", `${fmt.duration(status.spent_seconds)} of ${fmt.duration(status.minutes * 60)}`]);
+  }
   if (status.resumed_from) rows.push(["Resumed from", status.resumed_from]);
   if (status.problem) rows.push(["Problem", status.problem]);
   $("run-detail").innerHTML = rows
     .map(([k, v]) => `<dt>${k}</dt><dd>${escape(v)}</dd>`)
     .join("");
+}
+
+/* ---------------------------------------------------------------- before training */
+
+async function loadPreparation() {
+  let data = null;
+  try {
+    data = await runJSON("/api/preparation");
+    if (!data) return;
+  } catch {
+    // Left empty: the status poll says when the server has gone.
+  }
+  state.preparation = data;
+  renderPreparation();
+}
+
+// A reading as the probe's own report gives it, to four significant figures.
+const reading = (v) => (v == null ? "" : String(Number(Number(v).toPrecision(4))));
+
+function renderPreparation() {
+  const data = state.preparation;
+  const box = $("prep");
+  if (!data) {
+    box.innerHTML = "";
+    $("prep-tag").textContent = "";
+    return;
+  }
+  const timed = data.minutes > 0;
+  const parts = [];
+  if (data.probe) parts.push(probeMarkup(data.probe));
+  if (timed) parts.push(sizingMarkup(data.sizing, data.minutes));
+  $("prep-tag").textContent = [
+    data.probe && "probed",
+    timed && (data.sizing ? "sized" : "timed"),
+  ].filter(Boolean).join(" · ");
+  box.innerHTML = parts.length ? parts.join("") : `<p class="hint">
+    Trained on the game as it was written, at the size it was given. A new run
+    with <code>probe.enabled</code> checks the game first, and one with
+    <code>sizing.minutes</code> is fitted to that much time.</p>`;
+}
+
+function probeMarkup(report) {
+  const findings = report.findings.length
+    ? `<ul class="findings">${report.findings.map((finding) => `<li class="${escape(finding.outcome || "")}">
+        <span class="tag">${escape(finding.kind.replace(/_/g, " "))}</span>
+        <div><p>${escape(finding.found)}</p><p class="did">${escape(finding.did)}</p></div>
+      </li>`).join("")}</ul>`
+    : `<p class="hint">Found nothing to change, so the game is played as it was written.</p>`;
+  const inputs = report.inputs.map((row) => `<tr${row.fate === "kept" ? "" : ' class="changed"'}>
+      <td class="mono">${escape(row.name)}</td>
+      <td class="n">${reading(row.low)}</td><td class="n">${reading(row.high)}</td>
+      <td class="n">${reading(row.after_low)}</td><td class="n">${reading(row.after_high)}</td>
+      <td>${escape(row.fate)}</td></tr>`).join("");
+  const players = report.players.map((row) => `<tr>
+      <td>${escape(row.player)}</td><td class="n">${fmt.int(row.episodes)}</td>
+      <td class="n">${fmt.dec(row.mean_steps, 1)}</td><td class="n">${fmt.int(row.longest)}</td>
+      <td class="n">${fmt.dec(row.mean_score, 2)}</td><td class="n">${fmt.int(row.cut)}</td></tr>`).join("");
+  return `<div>
+    <h3>Probe</h3>
+    <p>Played ${fmt.int(report.episodes)} episodes of ${escape(report.game)} in
+      ${fmt.dec(report.seconds, 1)} s: ${fmt.int(report.steps)} steps,
+      ${fmt.int(report.steps_per_second)} a second.</p>
+    ${report.out_of_time ? '<p class="hint warn">It ran out of time, so some of this rests on fewer episodes than planned.</p>' : ""}
+    ${findings}
+    <h4>Inputs</h4>
+    <div class="table-wrap"><table class="prep-table">
+      <thead><tr><th>Input</th><th class="n">Low</th><th class="n">High</th>
+        <th class="n">Fixed low</th><th class="n">Fixed high</th><th>What became of it</th></tr></thead>
+      <tbody>${inputs}</tbody></table></div>
+    <h4>Players</h4>
+    <div class="table-wrap"><table class="prep-table">
+      <thead><tr><th>Player</th><th class="n">Episodes</th><th class="n">Mean steps</th>
+        <th class="n">Longest</th><th class="n">Mean score</th><th class="n">Still going</th></tr></thead>
+      <tbody>${players}</tbody></table></div>
+  </div>`;
+}
+
+function sizingMarkup(plan, minutes) {
+  const rows = [["Time", fmt.duration(minutes * 60)]];
+  if (plan) {
+    const workers = plan.workers === 1 ? "1 worker" : `${plan.workers} workers`;
+    rows.push(
+      ["Sample", `${fmt.int(plan.games_sampled)} untrained games, ${fmt.dec(plan.seconds_per_game * 1000, 2)} ms each on ${workers}`],
+      ["Size", `population ${plan.population}, ${plan.episodes} games each`],
+      ["Carried over", `${plan.elites} elites, ${plan.immigrants} immigrants`],
+      ["Generations", `room for about ${fmt.int(plan.generations)}, ${fmt.int(plan.wanted)} wanted`],
+      ["Getting ready", `${fmt.dec(plan.setup_seconds, 1)} s, any probe included`],
+    );
+    if (plan.kept.length) rows.push(["Left as asked", plan.kept.join(", ")]);
+  } else {
+    rows.push(["Size", "the size of the run it was resumed from"]);
+  }
+  return `<div>
+    <h3>Sizing</h3>
+    <dl class="detail">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${escape(v)}</dd>`).join("")}</dl>
+    <p class="hint">Generations get dearer as players last longer, so a run can reach fewer
+      than this. It ends before a generation that would not fit.</p>
+  </div>`;
 }
 
 /* ---------------------------------------------------------------- charts */

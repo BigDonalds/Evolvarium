@@ -335,6 +335,7 @@ def test_a_clean_game_is_played_as_it_was_written(game):
     report = report_of(game)
     assert report.fixes.empty
     assert report.kinds() <= {"opposites"}
+    assert {finding.outcome for finding in report.findings} <= {"noted"}
     assert set(fates(report).values()) == {"kept"}
     played = games.create(game)
     assert with_fixes(played, report.fixes) is played
@@ -599,6 +600,7 @@ def test_a_game_may_only_turn_endless_once_its_inputs_are_fixed():
 def test_results_that_cannot_be_read_until_the_end_are_reported():
     report = cheaply(Unstoppable, ceiling=100)
     assert report.kinds() == {"needs_stop"}
+    assert {finding.outcome for finding in report.findings} == {"left"}
     assert report.fixes.step_cap is None
     assert "cannot be read before an episode is over" in found(report, "needs_stop")[0]
 
@@ -607,6 +609,7 @@ def test_slow_steps_are_reported_and_nothing_changed():
     limits = LimitsConfig(step_seconds=1e-9, episode_seconds=1e-9)
     report = cheaply(Plain, limits=limits)
     assert report.kinds() == {"slow"}
+    assert {finding.outcome for finding in report.findings} == {"left"}
     assert report.fixes.empty
     first, second = found(report, "slow")
     assert first.startswith("One step took ") and "limits.step_seconds" in first
@@ -616,6 +619,7 @@ def test_slow_steps_are_reported_and_nothing_changed():
 def test_no_time_at_all_still_gives_a_report():
     report = cheaply(Plain, seconds=0.0)
     assert report.out_of_time and report.kinds() == {"few_steps"}
+    assert {finding.outcome for finding in report.findings} == {"left"}
     assert report.episodes == 0 and report.fixes.empty
     assert all(row.low is None and row.high is None for row in report.inputs)
     assert not report.players
@@ -666,6 +670,7 @@ def test_the_guarded_form_gives_the_same_report():
     config = config_of("test_guards:Trouble", TroubleSettings(), search_steps=0)
     report = probe.run_guarded(config)
     assert report.steps > 0 and report.kinds() == {"rare"}
+    assert {finding.outcome for finding in report.findings} == {"left"}
     assert timeless(report) == timeless(probe.run(config))
 
 
@@ -752,3 +757,20 @@ def test_a_clean_arena_keeps_the_inputs_only_a_fight_moves(seed, monkeypatch):
     report = probe.run(config_of("arena"))
     assert report.fixes.empty
     assert set(fates(report).values()) == {"kept"}
+
+
+# ------------------------------------------------------------------- outcomes
+
+
+@pytest.mark.parametrize("fault", ["unscaled", "dead", "duplicate", "endless", "unseeded"])
+def test_a_fault_the_probe_fixes_is_marked_fixed(fault):
+    report = report_of("cartpole", broken.VARIANTS["cartpole"][fault])
+    assert fault in report.kinds()
+    assert {f.outcome for f in report.findings if f.kind == fault} == {"fixed"}
+
+
+def test_a_report_from_before_findings_had_outcomes_reads_them_as_left():
+    data = report_of("cartpole", broken.VARIANTS["cartpole"]["dead"]).to_dict()
+    for finding in data["findings"]:
+        del finding["outcome"]
+    assert {f.outcome for f in probe.Report.from_dict(data).findings} == {"left"}

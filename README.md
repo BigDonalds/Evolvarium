@@ -157,6 +157,7 @@ before a run and trains on the game as fixed. It is off by default.
 
 A game with nothing wrong is played as it was written and trains the same as with
 the probe off. The report is kept in the run's directory as `probe.json`, and the
+dashboard shows it under Before training, beside how a sized run was sized. The
 fixes go with its checkpoints and exported models, so a resumed run or a replay
 reads the game as the run did. A game can define `stop(stalled)` to settle an
 episode the probe's limits cut short, as the built-in games do. The players being
