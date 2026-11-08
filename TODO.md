@@ -20,6 +20,10 @@ Items still open at the baseline are in Snake-AI's
   that have learned nothing, so an input it calls dead may only be quiet in weak
   play, and one it leaves alone may grow far out of range in strong play. A run
   could watch the inputs it dropped or left alone and say so when one moves.
+- **A small count looks like a code.** Lives from 0 to 3 read the same as a kind
+  of tile, and get one input per value. That still trains, but a value past the
+  ones weak play showed reads as the largest of them.
+- **A code with more than 8 values is read as a number.**
 - **No way to keep an input the probe would drop.** Turning the probe off is the
   only way to overrule it for now.
 - **Episodes that differ between processes.** The determinism check compares

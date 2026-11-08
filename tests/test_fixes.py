@@ -17,7 +17,7 @@ import pytest
 from test_cartpole import cartpole_config
 from test_guards import GENOME, TroubleSettings, context
 from test_jobs import assert_same_population, cut_off, train, wait_for
-from test_probe import NoGoal, Plain
+from test_probe import Coded, NoGoal, Plain
 
 from evolvarium import games, held_out, probe
 from evolvarium.cli import main
@@ -39,6 +39,8 @@ LEFT = {"agent": "left"}
 # Three of cart-pole's four inputs, moved and scaled.
 INPUTS = Fixes(keep=(0, 2, 3), offset=(0.0, 0.1, -0.1), scale=(1.0, 2.0, 0.5))
 EVERYTHING = dataclasses.replace(INPUTS, step_cap=30, stall_cap=10, reseed=True)
+# Coded's kind read as a code, which is how the probe fixes it.
+CODES = Fixes(codes=((0.0, 1.0, 2.0, 3.0), None))
 # A budget that sees enough of a cart-pole on a sixty-step limit, in about a second.
 QUICKLY = ProbeConfig(enabled=True, episodes=5, search_steps=0, seconds=600.0)
 DEAD = games.reference(broken.DeadInputCartPole)
@@ -112,9 +114,10 @@ def test_no_fixes_leave_the_game_itself():
     assert population.fixes is None and type(population.game) is CartPoleGame
 
 
-def test_fixes_survive_being_written_and_sent():
-    assert Fixes.from_dict(json.loads(json.dumps(EVERYTHING.to_dict()))) == EVERYTHING
-    assert pickle.loads(pickle.dumps(EVERYTHING)) == EVERYTHING
+@pytest.mark.parametrize("fixes", [EVERYTHING, CODES])
+def test_fixes_survive_being_written_and_sent(fixes):
+    assert Fixes.from_dict(json.loads(json.dumps(fixes.to_dict()))) == fixes
+    assert pickle.loads(pickle.dumps(fixes)) == fixes
 
 
 @pytest.mark.parametrize("record", [None, {}])
@@ -152,6 +155,50 @@ def test_a_network_reads_the_inputs_kept_moved_and_then_scaled(fixes, names, exp
     values = game.observation.encode(game.observe("agent"))
     assert values.dtype == np.float32
     assert values.tolist() == pytest.approx(expected(turn, wave), rel=1e-6)
+
+
+def kind_and_wave(fixes: Fixes, seed: int) -> list[tuple[float, list[float]]]:
+    """Coded's kind at each step, and what the network reads then with `fixes`."""
+    game, raw = FixedGame(Coded(), fixes), Coded()
+    seen = []
+    for each in (game, raw):
+        each.reset(seed)
+    while not raw.over:
+        kind = raw.observation.encode(raw.observe("agent"))[0]
+        seen.append((float(kind), game.observation.encode(game.observe("agent")).tolist()))
+        game.step(LEFT)
+        raw.step(LEFT)
+    return seen
+
+
+def test_a_code_gives_the_network_one_input_per_value():
+    assert list(FixedGame(Coded(), CODES).observation.names) == [
+        "kind=0", "kind=1", "kind=2", "kind=3", "wave"]
+    seen = kind_and_wave(CODES, 3)
+    for kind, values in seen:
+        assert values[:4] == [1.0 if k == kind else 0.0 for k in range(4)]
+    assert {kind for kind, _ in seen} == {0.0, 1.0, 2.0, 3.0}
+
+
+def test_a_value_play_never_showed_reads_as_the_nearest_the_earlier_on_a_tie():
+    fixes = Fixes(codes=((0.0, 2.0, 5.0), None))
+    nearest = {0.0: 0, 1.0: 0, 2.0: 1, 3.0: 1}
+    for kind, values in kind_and_wave(fixes, 3):
+        assert values[:3] == [1.0 if k == nearest[kind] else 0.0 for k in range(3)]
+
+
+def test_a_code_follows_the_inputs_kept_and_scaled():
+    fixes = Fixes(keep=(1, 0), offset=(1.0, 0.0), scale=(2.0, 1.0),
+                  codes=(None, (0.0, 1.0, 2.0, 3.0)))
+    assert list(FixedGame(Coded(), fixes).observation.names) == [
+        "wave", "kind=0", "kind=1", "kind=2", "kind=3"]
+    game, raw = FixedGame(Coded(), fixes), Coded()
+    for each in (game, raw):
+        each.reset(4)
+    kind, wave = raw.observation.encode(raw.observe("agent")).tolist()
+    values = game.observation.encode(game.observe("agent")).tolist()
+    assert values[0] == pytest.approx((wave + 1) * 2, rel=1e-6)
+    assert values[1:] == [1.0 if k == kind else 0.0 for k in range(4)]
 
 
 def test_limits_alone_leave_the_inputs_to_the_game():
@@ -555,6 +602,48 @@ def test_a_model_of_a_fixed_game_plays_as_it_trained(tmp_path):
     assert champion.context.architecture["input_size"] == len(INPUTS.keep)
     held_out.score([champion], [40, 41], workers=1)
     assert champion.scores.tolist() == scores_of(population.context, genome, (40, 41))
+
+
+def test_a_model_that_reads_codes_plays_as_it_trained(tmp_path):
+    path = tmp_path / "coded.json"
+    config = dataclasses.replace(cartpole_config(), game=games.reference(Coded), settings=None)
+    population = Population(config, seed=12, fixes=CODES)
+    population.run_generation()
+    genome, document = exported(population, path)
+    assert document["version"] == 4
+    assert document["inputs"]["names"] == ["kind", "wave"]
+    assert document["inputs"]["codes"] == [[0.0, 1.0, 2.0, 3.0], None]
+    assert population.architecture.input_size == 5
+
+    player = Player.load(path)
+    assert "some as codes" in player.describe()
+    network = PolicyNetwork(population.architecture).load(genome)
+    game = population.game
+    for seed in (5, 6):
+        game.reset(seed)
+        while not game.over:
+            everything = game.base.observation.encode(game.base.observe("agent"))
+            move = game.actions.decode(network.forward(game.observation.encode(
+                game.observe("agent"))))
+            assert player.action(everything.tolist()) == move
+            game.step({"agent": move})
+    # A value the game never gave is read as the nearest, as the engine reads it.
+    assert player.outputs([7.0, 0.5]) == player.outputs([3.0, 0.5])
+
+
+@pytest.mark.parametrize(("codes", "message"), [
+    ([[0.0, 1.0, 2.0, 3.0]], "inputs.codes needs 2 entries"),
+    ([[0.0], None], "a list of at least two numbers"),
+    ([[0.0, "one"], None], "is not a finite number"),
+    (None, "inputs.codes needs 2 entries"),
+])
+def test_a_model_s_codes_are_checked_when_it_is_read(tmp_path, codes, message):
+    config = dataclasses.replace(cartpole_config(), game=games.reference(Coded), settings=None)
+    population = Population(config, seed=12, fixes=CODES)
+    _, document = exported(population, tmp_path / "coded.json")
+    document["inputs"]["codes"] = codes
+    with pytest.raises(model_file.ModelError, match=message):
+        Player(document)
 
 
 def test_limits_alone_keep_a_model_s_inputs_and_are_scored_by_it(tmp_path):

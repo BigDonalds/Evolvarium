@@ -7,7 +7,8 @@ found nothing wrong with is played by exactly the code that played it before.
 
 Inputs are moved and scaled by fixed numbers measured once, never against running
 statistics, so an input means the same thing in the first generation as the last
-and a saved model can do the same sums.
+and a saved model can do the same sums. An input read as a code becomes one
+input per value it takes, as a declared category does.
 """
 
 from __future__ import annotations
@@ -37,6 +38,9 @@ class Fixes:
     # Added to, then multiplied with, each column kept.
     offset: tuple[float, ...] | None = None
     scale: tuple[float, ...] | None = None
+    # For each column kept, the values it is read as a code of, or None for a
+    # column read as a number. A value not among them reads as the nearest.
+    codes: tuple[tuple[float, ...] | None, ...] | None = None
     # Steps an episode may run before it is ended.
     step_cap: int | None = None
     # Steps it may run with the score standing still before it is ended.
@@ -50,7 +54,7 @@ class Fixes:
 
     @property
     def inputs_changed(self) -> bool:
-        return self.keep is not None or self.scale is not None
+        return self.keep is not None or self.scale is not None or self.codes is not None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -64,6 +68,9 @@ class Fixes:
             keep=None if data.get("keep") is None else tuple(data["keep"]),
             offset=None if data.get("offset") is None else tuple(data["offset"]),
             scale=None if data.get("scale") is None else tuple(data["scale"]),
+            codes=None if data.get("codes") is None else tuple(
+                None if values is None else tuple(values) for values in data["codes"]
+            ),
             step_cap=data.get("step_cap"),
             stall_cap=data.get("stall_cap"),
             reseed=bool(data.get("reseed", False)),
@@ -142,9 +149,12 @@ class FixedGame:
         self._keep = None if fixes.keep is None else np.array(fixes.keep, dtype=np.intp)
         self._offset = None if fixes.offset is None else np.array(fixes.offset, dtype=np.float32)
         self._scale = None if fixes.scale is None else np.array(fixes.scale, dtype=np.float32)
+        self._codes = None
         if fixes.inputs_changed:
             names = game.observation.names
             kept = names if fixes.keep is None else [names[i] for i in fixes.keep]
+            if fixes.codes is not None:
+                kept = self._spread(kept, fixes.codes)
             self.observation = Observation(list(kept))
         else:
             self.observation = game.observation
@@ -152,6 +162,24 @@ class FixedGame:
         self._quiet = 0
         self._last = None
         self._cut: str | None = None
+
+    def _spread(self, kept: list[str], codes) -> list[str]:
+        """The names of the network's inputs with each code given one per value.
+
+        Works out where each column lands, for `observe`.
+        """
+        names, plain_from, plain_to, coded = [], [], [], []
+        for column, (name, values) in enumerate(zip(kept, codes, strict=True)):
+            if values is None:
+                plain_from.append(column)
+                plain_to.append(len(names))
+                names.append(name)
+            else:
+                coded.append((column, len(names), np.asarray(values, dtype=np.float32)))
+                names.extend(f"{name}={code_label(value)}" for value in values)
+        self._codes = (len(names), np.array(plain_from, dtype=np.intp),
+                       np.array(plain_to, dtype=np.intp), coded)
+        return names
 
     def __getattr__(self, name: str):
         # Only reached for what this class does not define itself. `base` is
@@ -177,6 +205,13 @@ class FixedGame:
             values = values[self._keep]
         if self._offset is not None:
             values = (values + self._offset) * self._scale
+        if self._codes is not None:
+            width, plain_from, plain_to, coded = self._codes
+            spread = np.zeros(width, dtype=np.float32)
+            spread[plain_to] = values[plain_from]
+            for column, start, codes in coded:
+                spread[start + int(np.abs(codes - values[column]).argmin())] = 1.0
+            values = spread
         return values
 
     def step(self, actions: dict) -> None:
@@ -214,6 +249,11 @@ class FixedGame:
         if self.base.over or self._cut is None:
             return self.base.end
         return self._cut
+
+
+def code_label(value: float) -> str:
+    """A code's value as its input is named: whole numbers without a decimal point."""
+    return str(int(value)) if float(value).is_integer() else repr(float(value))
 
 
 def with_fixes(game: Game, fixes: Fixes | None) -> Game | FixedGame:

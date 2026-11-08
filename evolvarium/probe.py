@@ -7,6 +7,7 @@ and episodes look like in play. From that it finds:
 
 * inputs out of scale, which saturate the network's hidden units;
 * inputs that never change, and inputs that only repeat another;
+* whole-number codes given as numbers, which a network reads as amounts;
 * episodes that nothing in the game is sure to end;
 * episodes that a seed does not decide;
 * rewards too rare to select on, and steps too slow to train with.
@@ -96,6 +97,10 @@ _REPEATS = (("random", 0), ("held", 1), ("network", 2),
             ("random", 3), ("held", 4), ("network", 5))
 _REPEAT_STEPS = 1000
 _REPEAT_SHARE = 0.25
+
+# A number input is read as a code when it only ever reads whole numbers, and
+# between these many of them. Two are a yes or no, which reads fine as a number.
+_CODE_VALUES = (3, 8)
 
 # A goal that differs from its usual value in less than this share of episodes
 # is too rare to select on, given enough episodes to tell.
@@ -464,6 +469,16 @@ def _straight_lines(sample: np.ndarray, columns: list[int]) -> list[tuple[int, i
     return found
 
 
+def _code(column: np.ndarray) -> tuple[float, ...] | None:
+    """The values a column takes, if they look like a code rather than an amount."""
+    values = np.unique(column)
+    if not _CODE_VALUES[0] <= len(values) <= _CODE_VALUES[1]:
+        return None
+    if not np.all(np.isfinite(values)) or not np.all(values == np.round(values)):
+        return None
+    return tuple(float(value) for value in values)
+
+
 def _out_of_scale(low: float, high: float) -> bool:
     if max(abs(low), abs(high)) > _WIDE:
         return True
@@ -488,6 +503,7 @@ class _InputFixes:
     keep: tuple[int, ...] | None = None
     offset: tuple[float, ...] | None = None
     scale: tuple[float, ...] | None = None
+    codes: tuple[tuple[float, ...] | None, ...] | None = None
     fates: dict[int, str] | None = None
 
 
@@ -587,9 +603,32 @@ def _examine_inputs(inputs: _Inputs, earlier: _Inputs, observation: Observation,
             outcome="noted",
         ))
 
+    coded: dict[int, tuple[float, ...]] = {}
+    for c in usable:
+        if c not in dropped:
+            values = _code(inputs.sample[:, c])
+            if values is not None:
+                coded[c] = values
+                fates[c] = f"a code of {len(values)} values"
+    if coded:
+        parts = [f"{names[c]} only read {_and([_number(v) for v in values])}"
+                 for c, values in coded.items()]
+        one = len(coded) == 1
+        findings.append(Finding(
+            "code",
+            f"{_and(parts)}. Whole numbers like {'these' if one else 'each of these'} look "
+            "like a code for one of a few things rather than an amount, and read as a number "
+            "the last would count as larger than the first.",
+            f"Gave {'it' if one else 'each'} one input per value, set to 1 for the value read "
+            "and 0 for the rest, as for a category. A value play never showed reads as the "
+            "nearest one it did.",
+            tuple(names[c] for c in coded),
+            outcome="fixed",
+        ))
+
     scaled: dict[int, tuple[float, float]] = {}
     for c in usable:
-        if c in dropped:
+        if c in dropped or c in coded:
             continue
         low, high = float(inputs.low[c]), float(inputs.high[c])
         if low != high and _out_of_scale(low, high):
@@ -615,6 +654,8 @@ def _examine_inputs(inputs: _Inputs, earlier: _Inputs, observation: Observation,
     if scaled:
         fixes.offset = tuple(float(scaled.get(c, (0.0, 1.0))[0]) for c in kept_columns)
         fixes.scale = tuple(float(scaled.get(c, (0.0, 1.0))[1]) for c in kept_columns)
+    if coded:
+        fixes.codes = tuple(coded.get(c) for c in kept_columns)
     return fixes
 
 
@@ -1022,6 +1063,7 @@ class _Probe:
             keep=input_fixes.keep,
             offset=input_fixes.offset,
             scale=input_fixes.scale,
+            codes=input_fixes.codes,
             step_cap=step_cap,
             stall_cap=stall_cap,
             reseed=reseed,
@@ -1097,8 +1139,14 @@ def _input_rows(observation: Observation, inputs: _Inputs, input_fixes: _InputFi
     afterwards: dict[int, tuple[float, float]] = {}
     if after is not None and after.inputs.rows:
         kept = range(observation.size) if fixes.keep is None else fixes.keep
-        for place, column in enumerate(kept):
-            afterwards[column] = (float(after.inputs.low[place]), float(after.inputs.high[place]))
+        codes = fixes.codes or (None,) * len(kept)
+        start = 0
+        # A code's columns, one per value, read together as the range they span.
+        for column, values in zip(kept, codes, strict=True):
+            end = start + (1 if values is None else len(values))
+            afterwards[column] = (float(after.inputs.low[start:end].min()),
+                                  float(after.inputs.high[start:end].max()))
+            start = end
     rows = []
     for column, name in enumerate(observation.names):
         low, high = float(inputs.low[column]), float(inputs.high[column])

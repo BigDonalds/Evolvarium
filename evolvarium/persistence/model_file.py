@@ -21,7 +21,15 @@ import numpy as np
 
 from ..fixes import Fixes
 from ..nn.network import Architecture, PolicyNetwork
-from ..player import FIXED_INPUTS_VERSION, FORMAT, VERSION, ModelError, check, read
+from ..player import (
+    CODED_INPUTS_VERSION,
+    FIXED_INPUTS_VERSION,
+    FORMAT,
+    VERSION,
+    ModelError,
+    check,
+    read,
+)
 
 __all__ = ["ModelError", "build", "dumps", "read", "to_genome", "write"]
 
@@ -69,9 +77,12 @@ def build(
     if fixed_inputs:
         inputs.update(_fixed_inputs(changed, len(input_names)))
 
+    version = VERSION
+    if fixed_inputs:
+        version = CODED_INPUTS_VERSION if changed.codes is not None else FIXED_INPUTS_VERSION
     document = {
         "format": FORMAT,
-        "version": FIXED_INPUTS_VERSION if fixed_inputs else VERSION,
+        "version": version,
         "exported_at": exported_at
         or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source": source,
@@ -93,11 +104,15 @@ def _fixed_inputs(fixes: Fixes, count: int) -> dict:
     used = list(range(count)) if fixes.keep is None else list(fixes.keep)
     offsets = (0.0,) * len(used) if fixes.offset is None else fixes.offset
     scales = (1.0,) * len(used) if fixes.scale is None else fixes.scale
-    return {
+    section = {
         "used": used,
         "offsets": np.asarray(offsets, dtype=np.float32).astype(np.float64).tolist(),
         "scales": np.asarray(scales, dtype=np.float32).astype(np.float64).tolist(),
     }
+    if fixes.codes is not None:
+        section["codes"] = [None if values is None else [float(v) for v in values]
+                            for values in fixes.codes]
+    return section
 
 
 def dumps(document: dict) -> str:

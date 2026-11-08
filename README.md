@@ -145,6 +145,10 @@ before a run and trains on the game as fixed. It is off by default.
   moved and scaled to read about -1 to 1. Inputs in range are left alone.
 - An input that never changes is dropped, and so is one that only repeats
   another, even flipped or scaled. The network is sized from what is left.
+- An input that only ever reads 3 to 8 whole numbers is taken for a code, such
+  as a kind of tile, and gets one input per value, set to 1 for the value read,
+  as a declared category does. A value play never showed reads as the nearest
+  one it did.
 - A game with an episode still going at `probe.ceiling` steps, 5,000 by default,
   gets a limit on steps with the score standing still, if its score moves often
   enough to tell, and a limit on all the steps of an episode. A game whose
@@ -205,8 +209,8 @@ A game whose actions have several parts, such as a direction and a stride, gets
 a dict from part name to value, as the game received them in training.
 
 A model of a game the probe changed still takes every input the game has. The
-file says which of them the network reads, with the offset and scale of each, and
-the player does the sums itself.
+file says which of them the network reads, with the offset and scale of each and
+any it reads as a code, and the player does the sums itself.
 
 The player's docstring describes the format. `python -m evolvarium evaluate`
 scores a model file on the held-out games under the rules it records. With

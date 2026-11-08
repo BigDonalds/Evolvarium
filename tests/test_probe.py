@@ -66,6 +66,37 @@ class Plain(Game):
         return self.turn
 
 
+class Coded(Plain):
+    """A kind of thing, given as one of four whole numbers, beside the wave."""
+
+    name = "coded"
+    observation = Observation(["kind", "wave"])
+
+    def observe(self, agent: str):
+        return [float((self.seed + self.turn) % 4), math.sin(self.seed + self.turn)]
+
+
+class Counted(Coded):
+    """A count that goes up every step: whole numbers, but far too many to be a code."""
+
+    def observe(self, agent: str):
+        return [float(self.turn), math.sin(self.seed + self.turn)]
+
+
+class Quarters(Coded):
+    """Four levels of something, as a share: few values, but not whole numbers."""
+
+    def observe(self, agent: str):
+        return [((self.seed + self.turn) % 4) / 3, math.sin(self.seed + self.turn)]
+
+
+class Flag(Coded):
+    """A yes or a no, which reads well enough as a number."""
+
+    def observe(self, agent: str):
+        return [float((self.seed + self.turn) % 2), math.sin(self.seed + self.turn)]
+
+
 class NoGoal(Plain):
     @property
     def score(self) -> int:
@@ -777,3 +808,26 @@ def test_a_report_from_before_findings_had_outcomes_reads_them_as_left():
     for finding in data["findings"]:
         del finding["outcome"]
     assert {f.outcome for f in probe.Report.from_dict(data).findings} == {"left"}
+
+
+# ------------------------------------------------------------------- codes
+
+
+def test_a_code_given_as_a_number_is_read_as_one():
+    report = cheaply(Coded)
+    assert report.kinds() == {"code"}
+    assert report.fixes.codes == ((0.0, 1.0, 2.0, 3.0), None)
+    assert report.fixes.keep is None and report.fixes.scale is None
+    assert found(report, "code")[0].startswith("kind only read 0, 1, 2 and 3.")
+    assert did(report, "code")[0].startswith("Gave it one input per value")
+    assert fates(report) == {"kind": "a code of 4 values", "wave": "kept"}
+    row = next(row for row in report.inputs if row.name == "kind")
+    assert (row.after_low, row.after_high) == (0.0, 1.0)
+    assert {f.outcome for f in report.findings} == {"fixed"}
+
+
+@pytest.mark.parametrize("cls", [Counted, Quarters, Flag])
+def test_an_amount_or_a_yes_or_no_is_not_a_code(cls):
+    report = cheaply(cls)
+    assert "code" not in report.kinds()
+    assert report.fixes.codes is None

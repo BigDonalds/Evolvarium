@@ -267,7 +267,7 @@ def test_a_choice_and_a_range_fill_three_outputs():
 
 @pytest.mark.parametrize("change, message", [
     (_set(("format",), "snake-ai-model"), "not an Evolvarium model"),
-    (_set(("version",), 4), "reads version 1 or 2 or 3; the file is version 4"),
+    (_set(("version",), 5), "reads version 1 or 2 or 3 or 4; the file is version 5"),
     (_set(("version",), True), "the file is version True"),
     (_set(("inputs", "names"), []), "inputs.names must be a list"),
     (_set(("actions", "parts"), []), "actions.parts must be a list"),

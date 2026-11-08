@@ -10,6 +10,63 @@ directly.
 
 ---
 
+## Codes given as numbers - one input per value
+
+A game can declare an input as a category, and since games moved behind the
+contract the engine has given a category one column per value. A game that
+gives the same thing as a number, a kind of tile as 0 to 3, got none of that:
+the network read 3 as three times 1 and had to carve the meaning out of a single
+line, and nothing told the game's author.
+
+**Finding them.** The probe now takes a number input for a code when everything
+it read in play was a whole number and it read between 3 and 8 of them. Two
+values are a yes or a no, which reads well as a number, and more than 8 look
+like a count or a position. A code gets one input per value, set to 1 for the
+value read and 0 for the rest, and a value play never showed reads as the
+nearest one it did, the earlier on a tie. The report names the values it found
+and counts it as a fix, and the input table gives its range after the fix as 0
+to 1. Dropping comes first, so a code that never changes or copies another goes
+as before, and a code is never scaled.
+
+None of the built-in games has one. In random play each of their inputs takes
+two values, or fractions, as the arena's health does in thirds, or far more than
+8, so all three are still played as they were written, which the tests of clean
+games check.
+
+**Model files.** A model that reads codes is written as version 4, which is
+version 3 with a list of codes, one entry per input used and null for one read
+as a number. The player does the same nearest-value sum itself, and gives a
+value the game never gave the outputs of the nearest one. A player older than
+this refuses a version 4 file rather than read a code as a number.
+
+**What it is worth.** Signal is a game made up for the check: a signal from 0 to
+4 says which of three moves scores, and neighbouring signals ask for different
+moves. With populations of 50 playing two games each for 40 generations, five
+seeds each way, the probe found the signal was a code. Read as one, the
+champions averaged 39.1 out of 40 on the 60 development games, four of the five
+perfect. Read as a number they averaged 25.0, four of the five stuck at 23.3,
+which is three of the five signals right. The ten runs took 38 s.
+
+**What it can't see.** A count that stays small in weak play, such as lives from
+0 to 3, reads the same as a code and is given one input per value. That still
+trains, since one input per value can say anything a number could over those
+values, but a value past the ones weak play showed reads as the largest of them.
+A code with more than 8 values is read as a number. TODO.md has both.
+
+**Checking it.** `tests/test_probe.py` gains four tests: a code given as a number
+is found, fixed and reported with its values, and a count, levels given as a
+share and a yes or a no are not codes. `tests/test_fixes.py` gains nine. A code
+gives the network one input per value, a value never seen reads as the nearest,
+the earlier on a tie, and a code keeps its place among inputs kept and scaled.
+Fixes with codes survive being written and sent. A model that reads codes plays
+as it trained, through the player alone, and a model file with codes that are
+missing, too short or not numbers is refused. `tests/test_player.py` now refuses
+version 5. The held-out replay of the model in `models/` still matches its record
+game for game. The whole suite, 706 passed and 2 skipped, took 173 s on battery,
+and the 25 slow tests 324 s.
+
+---
+
 ## The probe's report on the page
 
 The probe and the sizing each said what they did in the run's log and in files
