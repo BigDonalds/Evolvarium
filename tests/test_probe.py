@@ -477,9 +477,12 @@ def test_a_game_that_ignores_its_seed_repeats_once_seeded(game, cls):
         np.testing.assert_array_equal(first[0], other[0])
         assert first[1] == other[1]
 
+    # Played as written, each episode is drawn at random, and two short ones can
+    # match by chance: a snake that dies at once has only its food to differ by.
+    # Five in a row cannot.
     bare = cls()
-    assert not np.array_equal(play_out(bare, 11, moves=300)[0],
-                              play_out(bare, 11, moves=300)[0])
+    plays = [play_out(bare, 11, moves=300)[0] for _ in range(5)]
+    assert any(not np.array_equal(plays[0], other) for other in plays[1:])
 
 
 # ------------------------------------------------------------------- what a seed shows
