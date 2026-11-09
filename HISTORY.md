@@ -10,6 +10,149 @@ directly.
 
 ---
 
+## E2 - the grid against Snake's own eleven inputs
+
+**E2's target, set before any of its runs.** E2 asks how close inputs that know
+nothing about Snake get to the eleven written for it. Twenty runs train Snake
+for 150 generations each at the default settings, which leave the probe off.
+Ten use the eleven and ten add `--set grid.enabled=true`, at the default radius
+of 1 and horizon of 32. Nothing else differs, so the grid side also carries 112
+more weights, a neck cell that always reads 1, and first-layer weights that
+start 0.78 times as large, since each layer starts scaled to how many inputs it
+has, while a mutation moves a weight just as far. Both sides use seeds 1 to 10,
+but a seed number doesn't pair two runs. A grid genome holds 547 numbers against
+435, so the two runs' random draws part within the first genome, and the sides
+are compared as independent samples. Seeds 1 to 5 trained cart-pole and the
+arena, and seeds 3 and 4 trained Snake once each on 15 October, on boards of 10
+by 10 and 8 by 8 with 40 and 20 genomes, the second for 3 generations. Seeds 6
+to 10 have trained nothing here outside the tests. In Snake-AI, seed 7 trained
+Snake on the eleven under a 3,000-step cap and took off, to 67.2 held-out at
+generation 120. No run at these settings has used any of them.
+
+Each run's genome is chosen from its generation-150 checkpoint and the past
+champions its replays hold, by `export --pick best-average` on 48 selection
+games from seed 800000. The picks play the 60 held-out seeds only once every
+finished run has its pick, in one `evaluate` with the eleven's picks named
+first, so a difference reads grid minus the eleven. The encoder's checks played
+the 81.5 model on held-out games, but nothing in the encoder was chosen on a
+held-out score.
+
+**Two questions.** A Snake run either takes off or stalls. Snake-AI's five runs
+of one configuration stood at 28.4, 34.0, 67.2, 68.2 and 73.1 at generation
+120, with nothing between, and one stalled run on a side widens an interval over
+five runs a side to more than 20 points either way. So E2 asks what v4 against
+v3 asked there: how many runs take off, and how high the ones that take off get.
+A run takes off if its pick averages 50 or more over the 48 selection games
+that chose it, by the `selection_mean` its model file records rather than the
+rounded print, so no held-out game decides which runs are compared. A pick
+between 40 and 60 on either the selection or the held-out games is named with
+the result, since a run there is less clearly one or the other, but the rule
+still decides. Comparing only runs that took off leans one way. If the grid
+lifts runs that would have stalled on the eleven, they join its side near the
+cut and pull its mean down.
+
+**How high.** If at least 3 runs take off on each side, a second `evaluate`
+names only their picks, the eleven's first, and they play the same games to the
+same scores. D is the grid's mean minus the eleven's, and L to U its 95%
+interval, read from the file `--json` writes rather than the rounded print.
+Against a margin of 10 points, exactly one of these holds:
+
+| interval L to U | outcome |
+| --- | --- |
+| L above 0 | better: the grid beats the eleven |
+| L from -10 to 0, U 0 or more | close: the grid at most 10 behind |
+| L below -10, U 0 or more | unresolved: within 10 or not is unknown |
+| L -10 or more, U below 0 | behind, by less than 10 |
+| L below -10, U from -10 to below 0 | behind, by an amount not pinned down |
+| U below -10 | not close: more than 10 points short |
+| fewer than 3 take off on a side | no comparison of level; every pick listed |
+
+10 points is about a seventh of what a run that takes off scores, and near the
+8 that v4 against v3 could resolve with three runs a side. With ten a side that
+take off and a spread of 6 between them, the interval comes to about 6 points
+either way.
+
+**How often.** The two counts of runs that take off, each out of the runs that
+finished on its side, are read as a difference only when a two-sided Fisher
+exact test on them gives under 0.05, adding up the chances, given how many took
+off in all, of every split no likelier than the one seen. With 10 runs a side
+that needs a gap of 6 or more, such as 9 against 3, or 5 when one side has 0 or
+10, such as 10 against 5. Counts the test doesn't separate are given as they
+are, with no difference read, and don't show that the two sides take off as
+often. The result is the pair, such as "close, with 8 of 10 taking off on the
+grid against 7 of 10 on the eleven". The comparison over every pick from the
+first `evaluate` is given beside it and decides nothing.
+
+**What to expect.** Simulated with the same interval, a grid truly level with
+the eleven, with a spread of 6 between runs that take off, comes out close 91%
+of the time if no run stalls, 82% if one in five does, and 62% if two in five
+do, as the eleven did in Snake-AI. At a spread of 10 those fall to 55%, 44% and
+30%, nearly all the rest unresolved. A grid truly 15 points behind comes out
+close under 2% of the time. With the grid level and two stalls in five, fewer
+than 3 take off on a side about 3% of the time. Unresolved is a likely result,
+and it would be reported as it stands.
+
+**What counts.** Every run trains to generation 150. None is stopped early on
+purpose, extended, dropped or replaced by another seed, and no seed is added. A
+run cut off part way trains again from its seed, which repeats it exactly, and
+the cut-off part is set aside and named with the result. The sides alternate
+seed by seed, so a shortfall falls on both. A run not at generation 150 by
+18 December is listed as unfinished and left out, and the counts are then out
+of the runs that finished. All twenty runs, the picks and the scoring use the
+commit that carries this target. If the engine has to change before the first
+held-out `evaluate`, all twenty start again from seed 1 on the commit that fixes
+it. Only a fault that stops a run or breaks its inputs is a reason to change the
+engine, never a score, and the fault, the fix and every figure from the runs
+before the fix are reported with the result. A fault found after the first
+held-out `evaluate` starts nothing again. It is named with the result, and runs
+on the fixed engine would be a new experiment with a target of its own.
+
+**Prediction.** The grid matches the eleven. In numbers:
+
+- the outcome is close, with D between -5 and +5, and the eleven's picks that
+  take off average 60 to 80;
+- at least 7 grid runs take off, and no fewer than on the eleven;
+- the median generation at which a run's fittest genome first averages 50 over
+  its 4 games is at least 5 generations earlier on the grid, a run that never
+  gets there counting as later than 150, and a median of an even number of
+  runs being the mean of the middle two, or later than 150 if either is;
+- on each side, running into itself ends more than half of the held-out games
+  played by the picks that took off, all counted together.
+
+For scale on the third item, three dev runs on seed 11 with the eleven, at
+crossover rates of 0.25, 0.5 and 0.75, first reached 50 at generations 28, 35
+and 33. Each item is checked on the figures as they come, so one can fail on a
+gap the rules above don't read as a difference, and an item that can't be
+measured, because a side has no run that took off or both medians are past
+150, counts as failed. The prediction holds only if all four do. Seed luck
+alone can fail it even if the grid matches the eleven, so a failed prediction
+says little on its own, and none of the items is a test.
+
+The grid loses nothing the eleven hold. Ten of its inputs matched theirs at
+every step of game 900041, and on a 14 by 14 board the food's distance is half
+the sum of the sizes of `food_forward` and `food_lateral`, which it keeps. What
+it adds is which turns start a shortest way to the food around the body, three
+inputs that map almost one to one onto the three moves, and the four cells
+diagonal to the head. That should help the early climb, where runs stall. The
+ceiling should stay where it is. v3 and v4 saw different things, ended level and
+died the same way, a long snake shutting itself in, and the space inputs that
+bear on that are the same on both sides. Against the grid are the 112 weights,
+the cell that never changes, the smaller starting weights, and settings and a
+fitness tuned with the eleven, which is why the prediction is a draw and not a
+win.
+
+**Reported with it.** For each pick, its held-out mean, 25th percentile, games
+of 50 or more, how its games ended and its mean on the selection games. For each
+run, its training time, the generation it first reached 50 and its time a move,
+marked if it shared the laptop or ran on battery. The runs share the laptop with
+other work at times, so their times are given and not predicted. If either
+side's picks that took off end 10% or more of their held-out games alive at the
+10,000-step cap, that is named as a limit on the result. Whatever comes out,
+Snake keeps its own inputs by default. One comparison on one game isn't enough
+to move a default.
+
+---
+
 ## The grid encoder - inputs from what is on the grid
 
 Every game so far has come with inputs written for it. Snake's eleven took five
@@ -127,8 +270,8 @@ for game. The whole suite, 754 passed and 2 skipped, took 130 s on mains power,
 and the 25 slow tests 147 s. A two-generation Snake run started from the
 dashboard's form with `grid.enabled` ticked trained on the 18 inputs.
 
-E2 compares Snake on the grid with its own 11 inputs. Its prediction and
-thresholds go here before any of its runs.
+E2 compares Snake on the grid with its own 11 inputs. Its target is in the
+entry above.
 
 ---
 
