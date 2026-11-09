@@ -33,6 +33,28 @@ Items still open at the baseline are in Snake-AI's
   players stop looking once three of them reach it, and on an endless arena that
   has called `hurt` dead. `probe.search_steps=0` does the same on the clean arena.
 
+## Grid encoder
+
+- **The player cannot build grid inputs.** A model trained through the grid
+  encoder names the encoder's inputs, and a game outside Evolvarium has to work
+  them out itself. A standard-library copy of the encoder beside `player.py`
+  would do it.
+- **One action, a choice of moves.** The encoder plays a game whose one action is
+  where to move. A game that also picks something else each step, such as
+  whether to strike, cannot use it.
+- **The nearest of each kind only.** The way to the second-nearest food, or to a
+  second rival, does not show until the nearest is gone.
+- **Four neighbours.** Diagonal moves and other shapes of grid are not covered.
+- **Turns in place of the arena's directions.** The arena trains on turns from
+  the way each agent last moved when played through the grid. Whether that does
+  better or worse than its own four directions is not measured.
+- **The arena is about five times slower a generation on the grid.** 2.6 to 3.5 s
+  against 0.56 to 0.58 s at the default size, nearly all of it in the searches,
+  which cover the open floor for each of four agents every step.
+- **Snake's own inputs search cell by cell.** The grid's searches on bit sets give
+  the same space inputs, and all 18 of the grid's inputs cost 62 microseconds a
+  step against 107 for Snake's 11.
+
 ## Sizing
 
 - **Sized once, at the start.** A run that turns out slower than its sample

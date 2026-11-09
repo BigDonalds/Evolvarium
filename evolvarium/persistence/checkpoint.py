@@ -33,6 +33,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .. import grid
 from ..config import CheckpointConfig, Config
 from ..contract import settings_dict
 from ..events import (
@@ -123,6 +124,7 @@ def save(population: Population, path: Path) -> CheckpointInfo:
         "inputs": list(population.game.observation.names),
         "architecture": population.architecture.to_dict(),
         "fixes": None if population.fixes is None else population.fixes.to_dict(),
+        "grid": grid.to_dict(population.grid),
         # Recorded so a finished run can say what produced it. Comparing two runs
         # by launch order alone is a good way to attribute a result to the wrong
         # configuration.
@@ -277,6 +279,13 @@ def load(path: Path, config: Config, seed: int | None = None) -> Population:
         raise CheckpointMismatch(
             f"checkpoint was trained on inputs {inputs}, "
             f"the game now reads {list(population.game.observation.names)}"
+        )
+    # The inputs' names do not show how far the grid encoder looks ahead.
+    saved_grid = grid.from_dict(meta.get("grid"))
+    if saved_grid != population.grid:
+        raise CheckpointMismatch(
+            f"checkpoint was trained with grid settings {grid.to_dict(saved_grid)}, "
+            f"current configuration uses {grid.to_dict(population.grid)}"
         )
 
     saved_arch = Architecture.from_dict(meta["architecture"])

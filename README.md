@@ -184,6 +184,28 @@ not fit, counting a probe and the sample but not time held for someone watching,
 and a run carried on after a restart counts the time it had already spent. A
 sized run is the same run as one given that size by hand.
 
+A game on a grid can say what is on it instead of designing inputs. It declares
+a `grid`, with its size, what each of its moves does and the kinds of thing on
+it, such as food, and its `view` gives each agent's cell, the way it faces, the
+cells it cannot enter, the ones that open after a few moves, as a body moving
+out of the way does, and where the things are. The grid encoder in
+`evolvarium/grid.py` builds the inputs from that, all relative to the way the
+agent faces: which cells around it are blocked, how much of the grid each move
+leaves within reach, which moves start a shortest way to the nearest thing of
+each kind and where that thing lies, how much of the grid is blocked, and any
+numbers no cell shows, such as health, as the view gives them. A game that moves
+in fixed directions is steered by turns instead, from the way the agent last
+moved.
+
+A game with a grid and no inputs of its own always trains this way. Snake and
+the arena have inputs of their own as well, and train on the grid when a run
+asks for it. `grid.radius` is how many cells each way the agent sees, 1 by
+default, and `grid.horizon` how many moves ahead the search looks, 32:
+
+```bash
+python -m evolvarium train --set grid.enabled=true
+```
+
 A game that declares a `scene` can be watched on the dashboard. The scene lists
 layers of cells, dots, boxes or lines and labels such as the score, and `draw`
 returns each layer's items and each label's value after every step of a recorded
@@ -210,7 +232,10 @@ a dict from part name to value, as the game received them in training.
 
 A model of a game the probe changed still takes every input the game has. The
 file says which of them the network reads, with the offset and scale of each and
-any it reads as a code, and the player does the sums itself.
+any it reads as a code, and the player does the sums itself. A model trained on
+the grid names the encoder's inputs and records its settings, so `evaluate` and
+the dashboard play it as it trained, but the player needs those inputs given to
+it.
 
 The player's docstring describes the format. `python -m evolvarium evaluate`
 scores a model file on the held-out games under the rules it records. With

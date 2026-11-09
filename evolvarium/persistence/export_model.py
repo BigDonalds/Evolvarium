@@ -24,6 +24,7 @@ import numpy as np
 from .. import games
 from ..contract import Game
 from ..fixes import FixedGame
+from ..grid import GridGame
 from ..nn.network import Architecture, PolicyNetwork
 from . import model_file
 
@@ -119,7 +120,7 @@ def build_report(
     generation: int,
     genome: np.ndarray | None,
     summaries: list[dict],
-    game: Game | FixedGame,
+    game: Game | GridGame | FixedGame,
     architecture: Architecture,
     run_id: str,
     destination: Path,
@@ -128,7 +129,9 @@ def build_report(
 
     `game` is built with the settings the genome was trained under; the model
     file records its rules. For a game the probe fixed, the names are the
-    game's own and `size` is how many of them the network reads. Touches no files.
+    game's own and `size` is how many of them the network reads. For one played
+    through the grid encoder, the game's own are the ones the encoder builds.
+    Touches no files.
     """
     achievements = game.milestones([s for s in summaries if s["generation"] <= generation])
     training = summarise_training(summaries, generation, game.direction)
@@ -153,7 +156,7 @@ def build_report(
             "names": list(base.observation.names),
             "settings": inputs["settings"],
         },
-        "game": {"name": games.reference(base), **game.model_rules()},
+        "game": {"name": games.reference(games.unwrap(game)), **game.model_rules()},
         "fixes": game.fixes.to_dict() if isinstance(game, FixedGame) else None,
         "actions": game.actions.describe(),
         "training": training,

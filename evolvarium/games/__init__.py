@@ -14,8 +14,10 @@ from __future__ import annotations
 import dataclasses
 import importlib
 
-from ..config import SECTIONS, Config
+from ..config import SECTIONS, Config, GridConfig
 from ..contract import DIRECTIONS, Game, closest
+from ..fixes import FixedGame, Fixes, with_fixes
+from ..grid import GridGame, with_grid
 
 _BUILT_IN = {
     "arena": "evolvarium.games.arena:ArenaGame",
@@ -72,6 +74,20 @@ def reference(game: Game | type[Game]) -> str:
 
 def create(name: str, settings=None) -> Game:
     return get(name)(settings)
+
+
+def prepare(name: str, settings=None, *, grid: GridConfig | None = None,
+            fixes: Fixes | None = None) -> Game | GridGame | FixedGame:
+    """The game as a run plays it: through the grid encoder when `grid` is given,
+    then with the probe's `fixes`, which were measured on what the encoder built."""
+    return with_fixes(with_grid(create(name, settings), grid), fixes)
+
+
+def unwrap(game) -> Game:
+    """The game itself, from inside any encoder or fixes it is played through."""
+    while isinstance(game, GridGame | FixedGame):
+        game = game.base
+    return game
 
 
 def settings_for(config: Config):

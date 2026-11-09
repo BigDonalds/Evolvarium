@@ -32,13 +32,14 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .. import games, probe, settings, sizing
-from ..config import CONFIG, SECTIONS, Config, HistoryConfig
+from .. import games, grid, probe, settings, sizing
+from ..config import CONFIG, SECTIONS, Config, GridConfig, HistoryConfig
 from ..contract import load_settings
 from ..events import Event, EventBus, GenerationEvaluated, Note, RunFinished
 from ..evolution.evaluation import EvalContext, GameFault
 from ..evolution.pool import WorkerBudget, WorkerError, resolve_workers
 from ..fixes import Fixes, with_fixes
+from ..grid import with_grid
 from ..held_out import choose_by_average, describe, gather_candidates, search_settings
 from ..nn.network import Architecture
 from ..persistence import checkpoint, export_model, jobs
@@ -408,6 +409,7 @@ class SavedRun(RunView):
         self.evolution = recorded.get("evolution") or {}
         self.settings = None
         self.fixes = None
+        self.grid = None
         try:
             cls = games.get(self.game_name)
             self.direction = cls.direction
@@ -418,7 +420,13 @@ class SavedRun(RunView):
             self.fixes = Fixes.from_dict(
                 (self.meta or {}).get("fixes") or self.manifest.get("fixes")
             )
-            self.game = with_fixes(cls(self.settings), self.fixes)
+            own = cls(self.settings)
+            # A run stopped before its first checkpoint has only its manifest's settings.
+            self.grid = (
+                grid.from_dict(self.meta.get("grid")) if self.meta
+                else grid.choose(own, load_settings(GridConfig, recorded.get("grid"), strict=False))
+            )
+            self.game = with_fixes(with_grid(own, self.grid), self.fixes)
             scene = self.game.scene()
             self.scene = None if scene is None else scene.describe()
             self.architecture = self._architecture(recorded)
@@ -547,6 +555,7 @@ class SavedRun(RunView):
             exploration_rate=0.0,
             replay_steps=CONFIG.history.replay_steps,
             fixes=self.fixes,
+            grid=self.grid,
         )
 
     def export_generation(self) -> int:

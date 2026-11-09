@@ -17,7 +17,7 @@ from collections.abc import Iterable, Sequence
 from numbers import Integral, Real
 from pathlib import Path
 
-from . import games
+from . import games, grid
 from .config import SECTIONS, Config
 from .contract import Problems, closest, override
 from .evolution import operators, selection
@@ -303,6 +303,15 @@ def _unused(config: Config, dashboard: bool) -> dict[str, str]:
                 unused[f"probe.{name}"] = "probe.enabled is false"
     if config.sizing.minutes == 0:
         unused["sizing.generations"] = "sizing.minutes is 0"
+    game = games.get(config.game)
+    if not grid.own_inputs(game):
+        unused["grid.enabled"] = (
+            f"{config.game} has no inputs of its own, so it is always played through the grid"
+        )
+    elif not config.grid.enabled:
+        for name in _names(config.grid):
+            if name != "enabled":
+                unused[f"grid.{name}"] = "grid.enabled is false"
     if not dashboard:
         for name in _names(config.server):
             unused[f"server.{name}"] = "the run has no dashboard"
@@ -372,6 +381,16 @@ def _problems(config: Config, unused: dict[str, str]) -> Problems:
         problems.at_least("probe.search_steps", config.probe.search_steps, 0)
         problems.above("probe.seconds", config.probe.seconds, 0)
         problems.at_least("probe.ceiling", config.probe.ceiling, 2)
+    game = games.get(config.game)
+    if grid.choose(game, config.grid) is not None:
+        if not grid.has_grid(game):
+            problems.append(
+                f"grid.enabled is true, but {config.game} has no grid to read"
+                if grid.own_inputs(game) else
+                f"{config.game} has neither inputs of its own nor a grid to build them from"
+            )
+        problems.at_least("grid.radius", config.grid.radius, 1)
+        problems.between("grid.horizon", config.grid.horizon, 1, 254)
     problems.at_least("sizing.minutes", config.sizing.minutes, 0)
     if "sizing.generations" not in unused:
         problems.at_least("sizing.generations", config.sizing.generations, 1)

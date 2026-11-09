@@ -8,12 +8,14 @@ from ...contract import (
     Actions,
     Choice,
     Game,
+    Grid,
     Label,
     Layer,
     Milestone,
     Observation,
     Problems,
     Scene,
+    View,
     load_settings,
 )
 from .board import Turn
@@ -24,6 +26,8 @@ from .settings import BoardConfig, EpisodeConfig, FeatureConfig, FitnessConfig, 
 
 ACTIONS = Actions(Choice("turn", ("left", "straight", "right")))
 _TURNS = {"left": Turn.LEFT, "straight": Turn.STRAIGHT, "right": Turn.RIGHT}
+# The same turns as the grid encoder names them.
+_GRID_MOVES = {"left": "left", "straight": "ahead", "right": "right"}
 # The body is listed from the tail, so a move drops the first cell and appends
 # the one the head left, and fades toward the tail.
 _LAYERS = (
@@ -113,6 +117,34 @@ class SnakeGame(Game):
 
     def milestones(self, summaries: list[dict]) -> list[Milestone]:
         return milestones(summaries)
+
+    # -------------------------------------------------------------- grid
+
+    def grid(self) -> Grid:
+        board = self.settings.board
+        return Grid(board.width, board.height, _GRID_MOVES,
+                    things=("food",), gauges=("hunger",))
+
+    def view(self, agent: str) -> View:
+        """The body as cells that open when the tail reaches them, and the food.
+
+        No cell shows how close the snake is to starving, so that is a gauge.
+        """
+        episode = self.episode
+        snake = episode.snake
+        body = snake.cells()
+        length = len(body)
+        food = episode.food
+        return View(
+            at=snake.head,
+            heading=snake.heading.delta,
+            # The tail opens on the next move, and each segment one move after the
+            # one behind it.
+            clearing={cell: length - offset for offset, cell in enumerate(body)},
+            things={"food": () if food is None else (food,)},
+            gauges={"hunger": min(episode.steps_since_food / max(episode.starvation_limit, 1),
+                                  1.0)},
+        )
 
     # -------------------------------------------------------------- profiling
 

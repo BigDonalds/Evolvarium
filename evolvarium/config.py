@@ -146,6 +146,20 @@ class ProbeConfig:
 
 
 @dataclass(frozen=True)
+class GridConfig:
+    """Inputs built from what a game on a grid says is on it, instead of its own."""
+
+    # Off, a game that declares inputs of its own plays with them. A game with a
+    # grid and no inputs of its own is played through the encoder either way.
+    enabled: bool = False
+    # How many cells each way the agent sees around itself.
+    radius: int = 1
+    # Moves ahead the search for room and for things looks. Snake's own inputs
+    # look 32 ahead, enough to cross its board.
+    horizon: int = 32
+
+
+@dataclass(frozen=True)
 class SizingConfig:
     """Fitting a run to the time someone has for it."""
 
@@ -191,6 +205,7 @@ class Config:
     history: HistoryConfig = field(default_factory=HistoryConfig)
     limits: LimitsConfig = field(default_factory=LimitsConfig)
     probe: ProbeConfig = field(default_factory=ProbeConfig)
+    grid: GridConfig = field(default_factory=GridConfig)
     sizing: SizingConfig = field(default_factory=SizingConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     server: ServerConfig = field(default_factory=ServerConfig)

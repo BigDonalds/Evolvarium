@@ -10,6 +10,128 @@ directly.
 
 ---
 
+## The grid encoder - inputs from what is on the grid
+
+Every game so far has come with inputs written for it. Snake's eleven took five
+versions to get right and the arena's nineteen were written for the arena alone,
+yet most of what they measure is the same on any grid: what is next to the agent,
+how much room each move leaves, and which way the thing it wants lies. The grid
+encoder measures those for any game that says what is on its grid, so a new grid
+game needs no inputs designed for it.
+
+**What a game gives.** A `Grid`, declared once: its size, what each option of its
+action does, either a turn (left, ahead, right, back or stay) or a step of one
+cell, and the names of the kinds of thing on it and of its gauges. Each step its
+`view` gives an agent's cell and heading, the cells nothing can enter, the cells
+that open after a number of moves, and where each kind of thing is. A snake's
+body is cells that open as the tail reaches them, the tail on the next move.
+Gauges are numbers no cell shows, such as Snake's hunger and the arena's health,
+and reach the network as they are.
+
+**What the network reads.** Everything is turned to the way the agent faces. At
+the default radius of 1:
+
+- `blocked_*`, the 8 cells around the agent, each 1 if it will still be blocked
+  when the agent could first get there, so a tail leaving as the head arrives
+  reads open, as Snake's danger inputs have it;
+- `space_<move>`, the share of the open grid within reach after each move, found
+  by searching outward a move at a time with each cell opening on its move, as
+  Snake's v3 measures space, up to `grid.horizon` moves, 32 by default;
+- `<thing>_via_<move>`, 1 for each move that starts a shortest way to the nearest
+  thing of the kind within the horizon, and `<thing>_forward` and
+  `<thing>_lateral`, where the nearest lies as a share of the grid's longer side;
+- `crowding`, the share of the grid blocked, then the gauges.
+
+A game whose moves are steps, as the arena's are, is offered turns instead (left,
+ahead, right, back, and stay if it has one), and each agent faces the way it last
+stepped, up to begin with. The encoder turns the choice back into the game's own
+step, so the game itself is not changed. Snake through the grid reads 18 inputs
+and the arena 44, against 11 and 19 of their own.
+
+**How a run uses it.** `grid.enabled`, off by default, plays a game that has
+inputs of its own through the encoder instead. A game with a grid and nothing
+else is always played through it. The encoder wraps the game as the probe's fixes
+do, inside them, so the probe measures the inputs the encoder builds. Its
+settings go with checkpoints, the run's record and model files, and a checkpoint
+resumes only under the settings it trained with. A model trained on the grid has
+`grid` for its encoding, with the game's own encoding inside, so `evaluate` and
+the dashboard rebuild it. A run that asks for the grid on a game without one is
+refused, as are `grid.radius` and `grid.horizon` given while the grid is off.
+Runs on the grid are compared apart from runs without it.
+
+**Snake.** Ten of the encoder's inputs are Snake's own, measured the generic way:
+the danger of each turn, the space behind it, where the food lies, the share of
+the board the snake fills and how close it is to starving. Playing held-out game
+900041 with the 81.5 model on its own inputs, 1,318 moves with the snake growing
+to 45 long, the ten match Snake's at every step, and the game ends as recorded.
+The eleventh, the food's distance, becomes which turns start a shortest way to
+the food, which goes round the body where the distance went through it. The
+other five are the cells beside and behind the head that Snake's inputs leave
+out.
+
+**Which way to the food.** The first version gave each move 1 / the moves to the
+nearest thing that way, the scale v5's rays use for distance. Moves differ by 2
+at most, so with the food six moves ahead the three turns read 0.17, 0.13 and
+0.13, and networks were slow to tell them apart. Forage, a 7 by 7 game in the
+tests with six walls and food that moves on when eaten, declares a grid and no
+inputs of its own. Each scale trained it for 25 generations of 30 genomes playing
+2 games each, on seeds 11 to 14:
+
+| `<thing>_via_<move>` | mean score, last 5 generations | best genome |
+|---|---|---|
+| 1 / moves | 0.42, 0.77, 2.17, 0.42 | 3.0, 4.5, 8.5, 4.5 |
+| fewest moves / this move's | 1.39, 0.97, 1.43, 2.53 | 5.0, 6.5, 6.5, 9.5 |
+| 1 for a shortest way, else 0 | 3.37, 3.50, 3.25, 2.95 | 8.5, 10.0, 9.0, 9.5 |
+
+The last did best on every seed, and the distance is still there in
+`<thing>_forward` and `<thing>_lateral`. Taking whichever move is marked eats
+11.4 food in a 60-move game, over 40 seeds, against 0.3 for random moves.
+
+**Cost.** Searched cell by cell in Python, the inputs cost more than the ones they
+replace: 122 microseconds a step on Snake against 107 for Snake's own, and 345 per
+agent on the arena against 5. Held as the bits of an integer, a set of cells
+grows by a whole layer in a few operations. On a grid where nothing opens later,
+one search with a front for each move gives every move's answer: arriving sooner
+never closes a way there, so the moves first to the nearest thing are the ones
+that start a shortest way to it. Both give the same inputs as the cell-by-cell
+search on 30,000 random views, half of them with nothing opening later. On mains
+power, a step of Snake now costs 62 microseconds on the grid against 107 on its
+own inputs, on the same states over 32,189 steps of the 81.5 model's first 10
+held-out games, and an arena agent 61 against 5, over 11,601 looks in random
+play. At the default size an arena generation took 2.6 to 3.5 s on the grid
+against 0.56 to 0.58 s on its own inputs, over the first four generations of
+seed 21.
+
+**What it can't do.** It plays a game whose one action is where to move, finds
+the way to the nearest thing of each kind only, and knows four neighbours, not
+diagonals. A model trained on it names the encoder's inputs, which the player
+cannot build. Whether turns serve the arena better than its own four directions
+is not measured. TODO.md has these, with the arena's cost.
+
+**Checking it.** `tests/test_grid.py` has 48 tests. A grid refuses moves that are
+neither turns nor one-cell steps, steps short of a direction, and names given
+twice. The encoder names the cells around the agent from where it faces, reads a
+scene turned four ways the same, counts the edge as blocked and a cell opening
+as the agent arrives as open, tells a pocket from open floor, waits for a body to
+move, marks the moves that start a shortest way to the nearest thing, and gives a
+thing beyond the horizon a place but no way. Snake's ten shared inputs match over
+the 81.5 model's game. The arena is steered by turns from each agent's heading.
+Forage trains through the grid alone, from a mean of 0.2 food to 3.7 in 12
+generations. Its checkpoint, model file and saved run play it back as it trained,
+a fault in its view is blamed on the view, and the probe measures the encoder's
+inputs and drops `crowding`, which six walls on every floor never move. A
+checkpoint resumes only under its own grid settings, and the settings checks
+refuse a grid the game lacks and settings that have no effect while the grid is
+off. The held-out replay of the model in `models/` still matches its record game
+for game. The whole suite, 754 passed and 2 skipped, took 130 s on mains power,
+and the 25 slow tests 147 s. A two-generation Snake run started from the
+dashboard's form with `grid.enabled` ticked trained on the 18 inputs.
+
+E2 compares Snake on the grid with its own 11 inputs. Its prediction and
+thresholds go here before any of its runs.
+
+---
+
 ## Codes given as numbers - one input per value
 
 A game can declare an input as a category, and since games moved behind the

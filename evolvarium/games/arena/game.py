@@ -6,12 +6,14 @@ from ...contract import (
     Actions,
     Choice,
     Game,
+    Grid,
     Label,
     Layer,
     Milestone,
     Observation,
     Problems,
     Scene,
+    View,
 )
 from .engine import INPUTS, MOVES, Match, pillar_sites
 from .settings import ArenaSettings
@@ -136,6 +138,39 @@ class ArenaGame(Game):
 
     def milestones(self, summaries: list[dict]) -> list[Milestone]:
         return milestones(summaries)
+
+    # -------------------------------------------------------------- grid
+
+    def grid(self) -> Grid:
+        floor = self.settings.floor
+        return Grid(floor.width, floor.height, MOVES,
+                    things=("food", "packs", "rival", "mates"), gauges=("health", "hurt"))
+
+    def view(self, agent: str) -> View:
+        """The pillars, the pickups, the rival and the teammates still standing.
+
+        Agents and the rival share cells, so none of them blocks a move. A fallen
+        agent's view is its health of 0 alone, and its move is ignored.
+        """
+        match = self.match
+        member = match.team[self._index[agent]]
+        if not member.standing:
+            return View(at=member.cell, gauges={"health": 0.0, "hurt": 1.0})
+        mates = [other.cell for other in match.team if other is not member and other.standing]
+        return View(
+            at=member.cell,
+            blocked=match.pillars,
+            things={
+                "food": match.food,
+                "packs": [cell for cell in match.packs if cell is not None],
+                "rival": (match.rival,),
+                "mates": mates,
+            },
+            gauges={
+                "health": member.health / self.settings.team.health,
+                "hurt": 1.0 if match.hurt(member) else 0.0,
+            },
+        )
 
     # -------------------------------------------------------------- profiling
 

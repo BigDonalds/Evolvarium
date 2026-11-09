@@ -25,6 +25,12 @@ to end an episode no rule of the game would end.
 A game that declares a `scene` can be watched. While an episode is recorded the
 engine calls `draw` after the reset and after every step, and the dashboard
 draws the frames it returns, so it shows any game without running its code.
+
+A game played on a grid can say what is on it instead of designing inputs: it
+declares a `grid` and returns a `View` for each agent from `view`, and the grid
+encoder builds the inputs from that (see `evolvarium/grid.py`). Such a game
+needs no `observation` or `observe` of its own, and one that has them is played
+through the encoder when a run asks for it.
 """
 
 from __future__ import annotations
@@ -420,6 +426,97 @@ class Scene:
         }
 
 
+# -------------------------------------------------------------------- grids
+
+Cell = tuple[int, int]
+# What a move can do relative to the way an agent faces.
+TURNS = ("left", "ahead", "right", "back", "stay")
+# The four steps between cells, clockwise from up, with y growing downward.
+STEPS = ((0, -1), (1, 0), (0, 1), (-1, 0))
+STAY = (0, 0)
+
+
+class Grid:
+    """The board of cells a game is played on, for the grid encoder to read.
+
+    `moves` says where each option of the game's one action takes the agent:
+    either a turn, one of TURNS, for agents that turn relative to the way they
+    face, or a step (dx, dy) for agents that move in fixed directions, with
+    (0, 0) for staying put. Steps need all four directions, since the encoder
+    turns them to face the way the agent faces and offers the network turns.
+
+    `things` names the kinds of cell an agent might head for or keep away from,
+    such as food or a rival, at most 8 of them. `gauges` names numbers about an
+    agent that no cell shows, such as its health, given to the network as they
+    are.
+    """
+
+    def __init__(self, width: int, height: int, moves: Mapping, *,
+                 things: Sequence[str] = (), gauges: Sequence[str] = ()):
+        if not (isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0):
+            raise ValueError(
+                f"a grid needs a whole number of cells each way, not {width} by {height}"
+            )
+        moves = dict(moves)
+        if len(moves) < 2:
+            raise ValueError("a grid needs at least two moves")
+        turning = all(isinstance(target, str) for target in moves.values())
+        if not turning:
+            moves = {option: tuple(target) if isinstance(target, list | tuple) else target
+                     for option, target in moves.items()}
+        targets = list(moves.values())
+        if turning:
+            unknown = [target for target in targets if target not in TURNS]
+            if unknown:
+                raise ValueError(f"a grid's turns are {list(TURNS)}, not {unknown[0]!r}")
+        else:
+            unknown = [step for step in targets if step not in (*STEPS, STAY)]
+            if unknown:
+                raise ValueError(
+                    f"a grid's moves are turns, one of {list(TURNS)}, or steps of one cell, "
+                    f"not {unknown[0]!r}"
+                )
+        if len(set(targets)) != len(targets):
+            raise ValueError("a grid lists two moves that go the same way")
+        if not turning and not set(STEPS) <= set(targets):
+            raise ValueError("a grid's steps need all four directions, so they can be "
+                             "turned to the way an agent faces")
+        things, gauges = tuple(things), tuple(gauges)
+        if len(things) > 8:
+            raise ValueError(f"a grid names {len(things)} kinds of thing; it can name 8")
+        named = [*things, *gauges]
+        if len(set(named)) != len(named) or not all(isinstance(n, str) and n for n in named):
+            raise ValueError("a grid's things and gauges need distinct names")
+        self.width = width
+        self.height = height
+        self.moves = moves
+        # Whether the moves are turns, rather than steps in fixed directions.
+        self.turning = turning
+        self.things = things
+        self.gauges = gauges
+
+
+@dataclass
+class View:
+    """One agent's grid at one step, as `Game.view` describes it.
+
+    `at` is the agent's cell and `heading` the step it faces, one of STEPS, or
+    None to take the way it last moved. `blocked` holds the cells no move can
+    enter, and `clearing` maps each cell that is blocked only for now to the
+    number of moves after which it opens, as for a body that moves out of the
+    way. Cells off the grid are blocked anyway, and the agent's own cell should
+    be in neither unless it is part of such a body. `things` gives the cells of
+    each kind the grid names and `gauges` the value of each gauge.
+    """
+
+    at: Cell
+    heading: Cell | None = None
+    blocked: Iterable[Cell] = ()
+    clearing: Mapping[Cell, int] = dataclasses.field(default_factory=dict)
+    things: Mapping[str, Iterable[Cell]] = dataclasses.field(default_factory=dict)
+    gauges: Mapping[str, float] = dataclasses.field(default_factory=dict)
+
+
 # --------------------------------------------------------------------- game
 
 
@@ -432,8 +529,10 @@ class Game:
     """Base class for a game the engine can train.
 
     A subclass sets `name`, `observation` and `actions`, and implements `reset`,
-    `observe`, `step` and the four episode properties. Everything else has a
-    default that suits a single-agent game scored on `score`.
+    `observe`, `step` and the four episode properties. A game on a grid may
+    implement `grid` and `view` in place of `observation` and `observe`.
+    Everything else has a default that suits a single-agent game scored on
+    `score`.
 
     `Settings` is a frozen dataclass of everything that changes the game's
     rules. The engine records it with each run and passes it back when a run is
@@ -526,6 +625,19 @@ class Game:
     def milestones(self, summaries: list[dict]) -> list[Milestone]:
         """Achievements read from a run's generation summaries."""
         return []
+
+    # -------------------------------------------------------------- grid
+
+    def grid(self) -> Grid | None:
+        """The grid the game is played on, or None for a game that is not on one."""
+        return None
+
+    def view(self, agent: str) -> View:
+        """What is on the grid around `agent` now. Needed only by a game with a `grid`.
+
+        Like `draw`, it must leave the episode as it found it.
+        """
+        raise NotImplementedError
 
     # -------------------------------------------------------------- profiling
 

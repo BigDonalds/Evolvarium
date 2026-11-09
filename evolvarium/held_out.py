@@ -28,7 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import games
+from . import games, grid
 from .config import CONFIG, HeldOutConfig
 from .contract import load_settings
 from .evolution.evaluation import EvalContext, EvalResult, make_runner
@@ -328,8 +328,11 @@ def _model_champion(path: Path) -> Champion:
     try:
         if not isinstance(name, str):
             raise ValueError("no game is named")
-        settings = games.get(name).settings_from_model(document)
-        _check_actions(document, games.create(name, settings))
+        # A model trained through the grid encoder keeps the game's own inputs
+        # inside the encoder's, and the game reads its settings from those.
+        played, own = grid.from_inputs(document.get("inputs") or {})
+        settings = games.get(name).settings_from_model({**document, "inputs": own})
+        _check_actions(document, games.prepare(name, settings, grid=played))
     except ValueError as error:
         raise TargetError(
             f"{path} is a model of {name!r} with {encoding!r} inputs, "
@@ -344,6 +347,7 @@ def _model_champion(path: Path) -> Champion:
         exploration_rate=0.0,
         replay_steps=CONFIG.history.replay_steps,
         fixes=Fixes.from_dict(document.get("fixes")),
+        grid=played,
     )
     return Champion(
         run_id=str(source.get("run") or path.stem),
@@ -393,6 +397,7 @@ def run_context(path: Path, meta: dict | None = None) -> EvalContext:
         exploration_rate=0.0,
         replay_steps=CONFIG.history.replay_steps,
         fixes=Fixes.from_dict(meta.get("fixes")),
+        grid=grid.from_dict(meta.get("grid")),
     )
 
 
@@ -401,7 +406,8 @@ def _higher(context: EvalContext) -> bool:
 
 
 def _encoding(context: EvalContext) -> str:
-    return str(games.create(context.game, context.settings).model_inputs()["encoding"])
+    game = games.prepare(context.game, context.settings, grid=context.grid)
+    return str(game.model_inputs()["encoding"])
 
 
 def _read_manifest(path: Path) -> dict | None:
@@ -425,7 +431,12 @@ def search_settings(config: dict) -> dict:
         "settings": checkpoint.saved_settings({}, config),
     }
     probed = (config.get("probe") or {}).get("enabled")
-    for section in (*SEARCH_SECTIONS, *(("probe",) if probed else ())):
+    # Left out at its defaults, so a run from before it existed groups with one after.
+    recorded = config.get("grid") or {}
+    gridded = any(recorded.get(name, value) != value
+                  for name, value in dataclasses.asdict(CONFIG.grid).items())
+    extra = (*(("probe",) if probed else ()), *(("grid",) if gridded else ()))
+    for section in (*SEARCH_SECTIONS, *extra):
         names = {f.name for f in dataclasses.fields(getattr(CONFIG, section))}
         names -= IGNORED_SETTINGS.get(section, set())
         settings[section] = {
@@ -451,8 +462,10 @@ def describe(settings: dict) -> str:
     _differences(settings.get("settings", {}), defaults["settings"], "", changes)
     for section in SEARCH_SECTIONS:
         _differences(settings.get(section, {}), defaults[section], f"{section}.", changes)
-    if "probe" in settings:
-        _differences(settings["probe"], dataclasses.asdict(CONFIG.probe), "probe.", changes)
+    for section in ("probe", "grid"):
+        if section in settings:
+            _differences(settings[section], dataclasses.asdict(getattr(CONFIG, section)),
+                         f"{section}.", changes)
     return ", ".join(changes) or "defaults"
 
 

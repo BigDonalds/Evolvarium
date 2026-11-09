@@ -40,12 +40,13 @@ from multiprocessing import connection
 
 import numpy as np
 
-from . import games
+from . import games, grid
 from .config import Config, NetworkConfig
 from .contract import Category, Game, Observation
 from .evolution.evaluation import GameFault, beat_interval, game_fault
 from .evolution.pool import SLACK, RemoteTraceback, WorkerError
 from .fixes import FixedGame, Fixes
+from .grid import GridGame, with_grid
 from .nn.network import Architecture, PolicyNetwork, random_genome
 
 # The first episode seed, in a block of its own that nothing else scores on.
@@ -724,8 +725,8 @@ class _Survey:
     inputs: _Inputs
 
 
-def _label(game: Game | FixedGame) -> str:
-    return type(game.base if isinstance(game, FixedGame) else game).__name__
+def _label(game: Game | GridGame | FixedGame) -> str:
+    return type(games.unwrap(game)).__name__
 
 
 class _Probe:
@@ -745,8 +746,10 @@ class _Probe:
         self.playing = 0.0
         self.slowest = 0.0
 
-    def fresh(self) -> Game:
-        return games.create(self.config.game, self.config.settings)
+    def fresh(self) -> Game | GridGame:
+        """The game as the run will play it, through the grid encoder if it asks for one."""
+        game = games.create(self.config.game, self.config.settings)
+        return with_grid(game, grid.choose(game, self.config.grid))
 
     def survey(self, game: Game | FixedGame, share: float, search: bool = False) -> _Survey:
         """Every kind of player plays its episodes, using `share` of the time left.

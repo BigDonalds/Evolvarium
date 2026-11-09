@@ -23,9 +23,10 @@ import time
 
 import numpy as np
 
-from .. import games
+from .. import games, grid
 from ..config import Config
 from ..fixes import Fixes, with_fixes
+from ..grid import with_grid
 from ..nn.network import Architecture, PolicyNetwork, random_genome
 from . import operators, selection, speciation
 from .evaluation import EvalContext, EvalResult, make_runner
@@ -76,7 +77,10 @@ class Population:
         self.config = config
         self.rng = np.random.default_rng(seed)
         self.fixes = None if fixes is None or fixes.empty else fixes
-        self.game = with_fixes(games.create(config.game, config.settings), self.fixes)
+        game = games.create(config.game, config.settings)
+        # The grid encoder's settings when the game is played through it, else None.
+        self.grid = grid.choose(game, config.grid)
+        self.game = with_fixes(with_grid(game, self.grid), self.fixes)
         self.higher = self.game.direction == "higher"
         # Described once, as the dashboard reads it with every generation.
         scene = self.game.scene()
@@ -98,6 +102,7 @@ class Population:
             replay_steps=config.history.replay_steps,
             limits=config.limits,
             fixes=self.fixes,
+            grid=self.grid,
         )
         self._runner = make_runner(self.context)
 

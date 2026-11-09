@@ -40,9 +40,10 @@ from typing import Any
 import numpy as np
 
 from .. import games
-from ..config import LimitsConfig
+from ..config import GridConfig, LimitsConfig
 from ..contract import Outcome
 from ..fixes import Fixes, with_fixes
+from ..grid import with_grid
 from ..nn.network import Architecture, PolicyNetwork
 from ..replays import Recorder
 
@@ -80,6 +81,8 @@ class EvalContext:
     limits: LimitsConfig = field(default_factory=LimitsConfig)
     # What the probe changed about the game, if it changed anything.
     fixes: Fixes | None = None
+    # The grid encoder's settings, for a game played through it.
+    grid: GridConfig | None = None
 
 
 @dataclass
@@ -126,18 +129,23 @@ _CALLS = {
     "pack": "packing the replay",
 }
 
-_FIXES_FILE = with_fixes.__code__.co_filename
+# The wrappers a game is played through, whose frames a fault looks past.
+_WRAPPERS = (with_fixes.__code__.co_filename, with_grid.__code__.co_filename)
 
 
 def game_fault(error: Exception, game: str, seed: int, turn: int, ended: bool) -> GameFault:
     """`error`, raised under a playing function's `try`, in words that say where."""
-    # A fixed game is played through a wrapper, and the call to blame is the one it made.
-    entries = [entry for entry in traceback.extract_tb(error.__traceback__)
-               if entry.filename != _FIXES_FILE]
+    # A fixed game, or one played through the grid encoder, is played through a
+    # wrapper, and the call to blame is the one it made.
+    raw = traceback.extract_tb(error.__traceback__)
+    entries = [entry for entry in raw if entry.filename not in _WRAPPERS]
     # The first entry is `play` itself and the next is the call it made.
     if len(entries) > 1:
         call = entries[1].name
         what = _CALLS.get(call, "{game}." + call).format(game=game)
+    elif raw[-1].filename == _WRAPPERS[1]:
+        # The grid encoder refused what the game's view gave it.
+        what = f"reading {game}.view's output as inputs"
     else:
         what = "playing the episode"
     if ended:
@@ -159,9 +167,9 @@ class _Runner:
     def __init__(self, ctx: EvalContext):
         self.ctx = ctx
         game = games.create(ctx.game, ctx.settings)
-        # Faults are blamed on the game, not on the wrapper around a fixed one.
+        # Faults are blamed on the game, not on the wrappers around it.
         self.label = type(game).__name__
-        self.game = with_fixes(game, ctx.fixes)
+        self.game = with_fixes(with_grid(game, ctx.grid), ctx.fixes)
         self.network = PolicyNetwork(Architecture.from_dict(ctx.architecture))
         self.higher = self.game.direction == "higher"
         self.scene = self.game.scene()

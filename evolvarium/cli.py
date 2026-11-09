@@ -18,7 +18,6 @@ from .contract import settings_dict
 from .events import EventBus, Note
 from .evolution.evaluation import GameFault
 from .evolution.pool import WorkerError, resolve_workers
-from .fixes import with_fixes
 from .held_out import (
     TargetError,
     candidates_from,
@@ -393,7 +392,8 @@ def command_export(args: argparse.Namespace) -> int:
         generation=int(population_meta.get("generation", 0)),
         genome=genome,
         summaries=lineage_summaries(run_dir),
-        game=with_fixes(games.create(context.game, context.settings), context.fixes),
+        game=games.prepare(context.game, context.settings, grid=context.grid,
+                           fixes=context.fixes),
         architecture=architecture,
         run_id=run_dir.name,
         destination=destination,
