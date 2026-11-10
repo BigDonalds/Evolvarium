@@ -151,6 +151,102 @@ side's picks that took off end 10% or more of their held-out games alive at the
 Snake keeps its own inputs by default. One comparison on one game isn't enough
 to move a default.
 
+**Against the target.** Better: the grid beats the eleven, with 10 of 10 runs
+taking off on the grid against 9 of 10 on the eleven. Over the picks that took
+off, the grid averages 112.3 on the held-out games and the eleven 77.0, so D is
++35.3, with a 95% interval of +18.4 to +52.1 in the file `--json` wrote. A
+two-sided Fisher exact test on the counts gives 1.0, so no difference is read in
+how often the two take off. Over all twenty picks, from the first `evaluate`,
+the grid is ahead by 39.0, from +21.1 to +56.9, which decides nothing.
+
+| side | seed | selection | held-out mean | 25th percentile | 50 or more | ends | minutes training | first 50 | µs a move |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: |
+| eleven | 1 | 70.56 | 65.9 | 57.0 | 57 | self 53, wall 4, starvation 3 | 162 | 57 | 45.5 |
+| eleven | 2 | 88.06 | 83.1 | 80.0 | 57 | self 58, starvation 2 | 98 | 23 | 25.1 |
+| eleven | 3 | 85.96 | 78.0 | 66.0 | 53 | step_limit 35, self 22, starvation 3 | 91 | 25 | 25.2 |
+| eleven | 4 | 84.17 | 82.4 | 70.0 | 50 | self 51, step_limit 5, wall 4 | 81 | 23 | 23.4 |
+| eleven | 5 | 81.94 | 83.9 | 70.5 | 59 | self 54, wall 6 | 106 | 17 | 22.1 |
+| eleven | 6 | 78.71 | 73.2 | 67.5 | 51 | self 48, step_limit 6, starvation 4, wall 2 | 79 | 33 | 21.6 |
+| eleven | 7 | 52.08 | 51.6 | 51.0 | 58 | self 58, wall 2 | 79 | 106 | 19.9 |
+| eleven | 8 | 83.69 | 84.7 | 67.8 | 58 | self 58, step_limit 1, wall 1 | 98 | 25 | 20.9 |
+| eleven | 9 | 90.83 | 90.1 | 75.8 | 57 | self 58, wall 2 | 71 | 17 | 20.9 |
+| eleven | 10 | 40.25 | 39.5 | 38.0 | 0 | self 59, wall 1 | 107 | never | 21.7 |
+| grid | 1 | 130.48 | 123.5 | 118.5 | 58 | self 38, step_limit 18, wall 4 | 62 | 11 | 16.2 |
+| grid | 2 | 125.23 | 127.0 | 121.8 | 59 | self 45, wall 11, step_limit 4 | 90 | 10 | 14.3 |
+| grid | 3 | 122.19 | 120.1 | 112.0 | 58 | self 47, wall 13 | 51 | 13 | 14.8 |
+| grid | 4 | 130.06 | 127.8 | 123.0 | 58 | self 54, step_limit 4, wall 2 | 60 | 10 | 12.3 |
+| grid | 5 | 133.58 | 135.8 | 129.0 | 60 | self 43, wall 11, step_limit 6 | 66 | 9 | 12.6 |
+| grid | 6 | 85.98 | 70.1 | 52.0 | 51 | self 33, wall 22, step_limit 3, board_filled 1, starvation 1 | 35 | 19 | 12.4 |
+| grid | 7 | 102.77 | 96.8 | 94.0 | 57 | self 49, wall 9, step_limit 2 | 45 | 53 | 11.4 |
+| grid | 8 | 99.33 | 87.8 | 76.0 | 59 | self 57, wall 3 | 28 | 10 | 13.3 |
+| grid | 9 | 125.38 | 124.3 | 116.8 | 60 | self 38, wall 12, step_limit 10 | 50 | 14 | 13.5 |
+| grid | 10 | 115.40 | 109.5 | 101.8 | 58 | self 50, wall 9, starvation 1 | 39 | 18 | 13.9 |
+
+Selection is the pick's mean over its 48 selection games, from its model file,
+and is what says whether a run took off. The next four columns are over the 60
+held-out games. First 50 is the first generation whose fittest genome averaged
+50 over its 4 games, counted from 0 as the run's history counts them, and µs a
+move is the training time over every move the run played, on seven workers.
+Every run was on mains power when it started and when it finished, all twenty
+reached generation 150, and none was set aside.
+
+Two picks are in the 40 to 60 band. The eleven's seed 7 is in it on both sets
+of games, 52.08 on selection and 51.6 held-out, and took off by the rule, the
+latest of any run to reach 50, in generation 106. The eleven's seed 10 is in it
+on selection at 40.25 and is the one run that stalled: no generation's fittest
+genome averaged more than 44.25 over its 4 games. The target warned that
+comparing only the runs that took off leans one way, with runs the grid lifts
+joining its side near the cut and pulling its mean down. Here the only pick
+near the cut that took off is the eleven's, and it pulls the eleven's mean
+down, so if anything the comparison leans toward the grid. Counting the
+eleven's seed 7 as stalled, which is not the rule, would give +32.1, from +16.2
+to +48.1, still better.
+
+**The prediction.** It fails on its first item. The outcome is better, not
+close, and D is far outside -5 to +5, though the eleven's picks that took off
+do average 77.0, inside 60 to 80. The other three hold. Ten grid runs took off,
+more than the 7 needed and no fewer than the eleven's nine. The median
+generation of first reaching 50 is 12 on the grid against 25 on the eleven,
+with the eleven's seed 10 counted as later than 150, so the grid is 13
+generations earlier. Running into itself ended 75.7% of the held-out games of
+the grid's picks that took off and 85.2% of the eleven's.
+
+The prediction was a draw because what the grid adds, mainly which turns start
+a shortest way to the food around the body, was expected to help the early
+climb and not the ceiling, which was to stay where v3 and v4 left it. The early
+climb did come sooner, but the ceiling moved too. Eight of the grid's ten picks
+average more held-out than the best of the eleven's, 90.1, and the grid's seed
+6 filled the whole board once, 193 points, the most a 14 by 14 board allows.
+The grid's picks hit walls more, in 16.0% of their games against 3.9% for the
+eleven's picks that took off, and run into themselves less. Why the ceiling
+moved is not measured here.
+
+**Limits.** The spread between runs was wider than the target planned for: 11.9
+on the eleven and 21.0 on the grid among the picks that took off, against the 6
+the target worked its interval out for, so the interval is 16.8 either way
+rather than about 6. The largest part of the grid's comes from its seed 6,
+which fell from 86.0 on selection to 70.1 held-out, and without it the grid's
+spread is still 15.8. Leaving it out of the comparison, again not the rule,
+gives +40.0, from +25.6 to +54.3. The step cap is not named as a limit, since
+neither side reaches the 10% the target set: the eleven's picks that took off
+ended 8.7% of their held-out games alive at 10,000 steps and the grid's 7.8%.
+One pick is held down by it all the same. The eleven's seed 3 ended 35 of its
+60 games alive at the cap, more than half, so most of its scores are where the
+cap stopped it rather than where it died. The grid's seed 1 ended 18 there.
+
+**How long it took.** The eleven's ten runs trained for 16.2 hours between them
+and the grid's for 8.8. The grid is quicker a move despite its 112 extra
+weights, since its inputs cost 62 µs a step against 107 for Snake's own, as
+measured in the grid encoder's entry below. From the first run starting at
+10:54 on 9 November to the last export at 13:04 on 10 November took 26 hours,
+and each `evaluate` about two minutes.
+
+**What stays.** Snake keeps its own eleven inputs by default, as the target said
+it would whatever came out, and the grid stays a setting. This is one
+comparison, on one game at one board size. Whether the grid helps the arena,
+where a generation takes about five times as long on the grid as on the arena's
+own inputs, is not measured.
+
 ---
 
 ## The grid encoder - inputs from what is on the grid
