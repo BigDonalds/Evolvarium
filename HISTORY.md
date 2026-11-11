@@ -10,6 +10,205 @@ directly.
 
 ---
 
+## Cyber defence - a security team against an intruder on a simulated network
+
+The engine trains games, and the project claims it isn't limited to them.
+Autonomous cyber defence tests that claim: a security team learns to contain an
+intruder spreading through a simulated enterprise network, with nothing in the
+engine changed for it. This entry builds the simulation, its scripted intruders
+and its hand-written defences. Training a defender against them is the next
+task, and its target goes here before any training.
+
+**The network.** Each seed draws 12 to 18 hosts in five zones. A web server sits
+in the DMZ. A user network holds 6 to 10 workstations, one of them the IT
+administrator's. A server network holds an application server, a file server
+and up to three of mail, backup and print. A domain controller sits in its own
+zone and a customer database in a restricted one. Firewall rules decide who can
+open a session to whom: workstations reach the servers and the domain
+controller but never the database or the backups, the web server reaches only
+the application server, and the database reaches nothing. Each seed also draws
+which services have a flaw, whether the user network is flat, whether every
+workstation shares one local admin password, which hosts run no endpoint agent,
+and where credentials sit in memory: a user's password on their workstation,
+the IT administrator's on their workstation and on some servers, a service
+account on the application server, and a domain admin session somewhere. A
+check at the start guarantees a way from a phished workstation to the database
+and to control of the domain controller, which needed a flaw added in 55 of 200
+dev seeds.
+
+**The intruder.** It gets in by phishing a workstation or exploiting the web
+server, then scans, escalates, dumps credentials, moves with them or exploits
+flawed services, and works toward one of two ends: stealing the database a
+twelfth at a time, or staging ransomware on the domain controller and setting it
+off. It chooses a tactic, what to aim at and how carefully to work, from a view
+of its own position, and the rules decide the rest. Three scripted intruders
+make those choices: an operator, a careful one that waits when it loses ground
+and gets seen half as often, and one that rushes. When it is thrown out it comes
+back by VPN with a password it stole, or with a fresh phishing campaign, one to
+three times. Data leaves the database only through a host the intruder moved
+onto it from, since the database reaches nothing outside. All of its choices go
+through a declared set of actions, so a network can play it later.
+
+**The team.** Alerts come from the intruder's actions, with chances that depend
+on the technique, on how carefully it worked and on whether the host runs an
+endpoint agent. False ones come from the hosts on their own: 4 for every true
+one in an undefended incident, and 13 under the tuned rule below, whose
+incidents run longer. Two analysts work a queue ranked by risk, and each is
+handed one host a step. For it an analyst watches, dismisses its alerts,
+investigates it for two hours, isolates or releases it, rebuilds it, resets
+every credential, or blocks the command channel an investigation turned up.
+Investigating, isolating, rebuilding, resetting and blocking each cost
+something, isolated and rebuilt hosts are out of service, and a rebuilt
+workstation costs its user a morning. A step is half an hour and an incident
+lasts at most four days. The score is what the incident cost, in units where
+the whole database is 100, so lower is better, and the fitness is minus the
+cost by what it was spent on. Each analyst is an agent, and both play the same
+network. An analyst sees 31 inputs about the host it holds and the incident as
+a whole, and never the intruder itself.
+
+**What changed on the way.** The design was drafted for realism, for what a
+small fixed network can learn, and for the dashboard and the attacker that
+evolves later, then measured in a throwaway prototype, looking for a cheap rule
+that already does the job. There was one. Rebuilding a workstation cost 0.7
+against 100 for the database, so a seven-line rule that rebuilt any workstation
+with an alert came close to a bound that reads the truth, and a simulation a
+fixed rule handles is too simple to mean much. These changes followed:
+
+- a rebuilt workstation costs its user a morning, 1.0 on top of the rebuild;
+- an investigation finds the intruder 0.6 times as often where it worked
+  carefully or the host has no endpoint agent, and never reports one that is
+  not there;
+- workstations raise false alerts three times as often, 0.045 a step, since
+  endpoints raise most of the low alerts a team sees, and telling them apart is
+  what a learned defender can do and a crude rule can't;
+- data leaves through a relay host, and the database sends no command traffic;
+- an intruder locked out of every workstation it holds a password for spends a
+  phishing campaign instead of waiting at the door for good;
+- a reset lets the intruder take fresh credentials from hosts it still holds as
+  admin, so resetting before clearing them out does little;
+- a ransomware intruder goes after the backups, which double what recovery costs
+  if it holds them, presses on rather than lying low once it holds domain
+  admin, and comes in through the web server only where that could lead to the
+  domain controller;
+- the IT administrator's workstation is costed as a server, a landing on a
+  workstation learns where the domain controller is, and a blocked channel is
+  back in 1.5 to 4 hours;
+- the rules have plain names, such as ladder and reimage_high.
+
+**Faults found.** Testing and a review of the code found eight, all fixed before
+any figure below was taken. An action whose only host was isolated carried on
+once the host was released, where it should be given up as lost ground. A
+finding made outside a step, as the bounds below make them, raised leads that
+never arrived, and left the other inputs saying nothing had been found. The
+command channel's traffic raised an alert at the square of its chance, 0.0001 a
+step instead of 0.01. A move under way when the credentials were reset still
+landed. Rebuilding the relay left the intruder holding a database it could
+never reach again, which a trained defender could have learned to rely on.
+Rebuilds and blocked channels ran a step short. Leads counted as false alerts.
+And lost ground went uncounted when the intruder gained a host in the same
+step.
+
+**Setting the costs.** A gate decided them, on dev seeds 700000 to 700199: an
+undefended incident has to be lost at least 85% of the time, random play and
+lockdown have to cost more than doing nothing, rebuilding every workstation has
+to cost more than the best rule, the best rule has to cost at most 0.65 of
+doing nothing, and it has to stay well above the bound. The best rule came from
+a search, not from the rules written by hand: tables that give a response for
+each kind of host (ordinary workstation, the IT administrator's, server, domain
+controller or database) and each strength of its open alerts (none, low,
+medium, high or a lead), searched one cell at a time from three starting rules,
+then scored on seeds 800000 to 800199 that chose nothing. With workstation noise
+at 0.045:
+
+| rebuilt workstation | reset | down DC | sweep | best searched, dev / fresh | seer | idle |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1.0 | 6, every 12 h | 1.5 | 90.6 | 78.8 / 86.0 | 23.5 | 143.4 |
+| 1.0 | 8, every 18 h | 1.5 | 90.6 | 81.1 / 85.9 | 26.6 | 143.4 |
+| 1.5 | 8, every 18 h | 1.5 | 104.7 | 84.1 / 92.5 | 28.2 | 143.4 |
+| 1.0 | 8, every 18 h | 2.0 | 93.9 | 80.0 / 88.4 | 27.5 | 148.5 |
+
+The first row is the default. The dearer settings left the best rules where
+they were or pushed them toward doing nothing, and narrowed the gap to the
+seer. Taken a round further on the default, the search from the quietest
+starting rule did best on both blocks, at 78.4 and 82.2, and its table became
+the rule called tuned. It investigates quiet workstations, rebuilds an ordinary
+workstation on a low or high alert and isolates it on a medium one, rebuilds
+the IT administrator's workstation only on a high one, investigates every alert
+on a server, the domain controller or the database, and rebuilds none of those
+three on suspicion alone.
+
+**The hand-written defences, on held-out seeds.** Frozen, then played once on
+seeds 900000 to 900059 with `python -m evolvarium.games.cyber.scripted`:
+
+| rule | cost | lost | thrown out | investigations | rebuilt |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| idle | 143.4 | 60 | 0 | 0.0 | 0.0 |
+| random | 358.8 | 14 | 7 | 29.6 | 30.9 |
+| lockdown | 438.0 | 15 | 0 | 0.0 | 0.0 |
+| reimage_high | 174.4 | 25 | 3 | 0.0 | 12.5 |
+| nuke | 143.6 | 1 | 34 | 39.1 | 78.0 |
+| ladder | 156.9 | 10 | 29 | 34.6 | 7.2 |
+| analyst | 127.5 | 12 | 3 | 43.9 | 4.9 |
+| triage | 93.9 | 12 | 40 | 50.0 | 5.5 |
+| hunter | 93.5 | 10 | 43 | 54.8 | 6.2 |
+| sweep | 94.6 | 9 | 42 | 32.0 | 27.1 |
+| tuned | 69.3 | 5 | 46 | 44.6 | 18.7 |
+| seer, a bound | 24.3 | 0 | 60 | 0.0 | 3.9 |
+| oracle, a bound | 10.7 | 0 | 44 | 0.0 | 3.3 |
+
+Lost counts incidents of 60 where the database was stolen or the ransomware went
+off, and thrown out those that ended with the intruder gone for good and every
+host back in service. Investigations and rebuilt are per incident. The two
+bounds read the truth: the seer judges at once and rightly any host with an open
+alert it is handed, and the oracle any host at all. They show what the evidence
+is worth, not what a defence could reach. Tuned, the bar for a trained team,
+costs 0.48 of doing nothing and 2.85 times the seer, and it is weakest against
+the intruder that rushes for the database, at 94. It came in lower here than on
+the dev seeds, 78.4, by 1.3 standard errors of a 60-game mean. Nuke, which
+rebuilds every ordinary workstation it is handed, costs as much as doing nothing
+here, 143.6, and more on the dev seeds, 157.8.
+
+**Speed.** A step with both analysts and a rule takes about 60 microseconds,
+against the arena's 46 with three agents. A three-generation run of 12 genomes
+from the dashboard trained and replayed, its scene showing the zones, the
+intruder's footholds and moves, its command channel and the alerts.
+
+**What it leaves out.** The list is in the README, beside the game: real
+protocols and tools, measured rates and costs, alert types and correlation,
+more than three scripted intruders, prevention and recovery beyond a rebuild,
+large networks, realistic alert rates, quiet days with no intruder, and the
+human side of a security team. Every result from this simulation is about the
+simulation.
+
+**Not in the broken-game suite.** The suite breaks the three games it was built
+for, five ways each, and E1 measures the probe on it. Cyber defence came after
+it and stays out, so E1 is the same experiment it was planned as. The probe
+finds nothing to change in it.
+
+**Checking it.** `tests/test_cyber.py` has 79 tests. The estate tests check that
+an incident is a function of its seed and responses, that estates keep their
+order and vary, that every one has its way in, that the firewall rules hold, and
+that neither the estate nor its false alerts depend on the intruder. Every
+scripted intruder, after either end, gets what it came for on 20 dev seeds when
+nobody defends. Rule tests place footholds and credentials by hand for entry by
+phishing and by exploit, a ransomware crew's choice of way in, scanning,
+dumping, moving with a credential and losing it to a reset part way, working
+carefully, giving up a cut-off action, stealing through a relay and finding the
+database again after the relay is rebuilt, ransomware, pausing it and backups
+doubling it, coming back by VPN or by phishing, waiting while every workstation
+is isolated, the beacon rate, and each of the team's responses, including the
+harder finds and a blocked channel coming back. One test places a host by hand
+and checks every input an analyst sees of it. Others check that inputs stay
+between 0 and 1, that a foothold nobody has noticed changes nothing an analyst
+sees, how incidents end and what they cost, the scene, replays, settings,
+milestones, worker processes, export, and the order the rules land in on dev
+seeds. A network can play the intruder, and its choices change what the
+incident costs. The held-out replay of the model in `models/` still matches its
+record game for game. The whole suite, 835 passed and 2 skipped, took 155 s with
+E2's runs sharing the laptop, and the 26 slow tests 177 s.
+
+---
+
 ## E2 - the grid against Snake's own eleven inputs
 
 **E2's target, set before any of its runs.** E2 asks how close inputs that know

@@ -56,14 +56,17 @@ def inputs_of(game, names: list[str]) -> list[int]:
 
 
 def test_every_version_is_found_by_its_reference_and_none_is_built_in():
-    assert set(broken.VARIANTS) == set(games.names())
+    # The suite breaks the three games it was built for. Cyber defence came after
+    # it and is not part of it.
+    assert set(broken.VARIANTS) == {"snake", "cartpole", "arena"}
     assert all(tuple(faults) == broken.FAULTS for faults in broken.VARIANTS.values())
     for game, _, cls in EVERY:
         reference = games.reference(cls)
         assert reference == f"evolvarium.games.broken:{cls.__name__}"
         assert games.get(reference) is cls
         assert issubclass(cls, games.get(game))
-    assert len({cls.name for _, _, cls in EVERY} | set(games.names())) == len(EVERY) + 3
+    assert (len({cls.name for _, _, cls in EVERY} | set(games.names()))
+            == len(EVERY) + len(games.names()))
 
 
 @pytest.mark.parametrize(("game", "cls"), every(*broken.FAULTS))

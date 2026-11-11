@@ -54,6 +54,27 @@ Items still open at the baseline are in Snake-AI's
 - **Snake's own inputs search cell by cell.** The grid's searches on bit sets give
   the same space inputs, and all 18 of the grid's inputs cost 62 microseconds a
   step against 107 for Snake's 11.
+- **Games that are not on a grid.** The encoder needs a board of cells, and the
+  cyber estate is a network, where next to means connected to. A network encoder
+  that reads which hosts connect and what is happening on each would do for
+  networks what the grid does for boards. It would want a comparison against
+  cyber's own inputs, with its target set first, as E2 did for Snake.
+
+## Cyber defence
+
+- **Every incident has an intruder.** There are no quiet days, when any response
+  is pure cost. A share of seeds without one would be more honest, and would
+  make training longer.
+- **Three scripted intruders, none of which adapts.** A defence can learn their
+  habits. The evolving attacker is planned.
+- **Every chance, rate, duration and cost is chosen.** None is measured, and the
+  order the hand-written defences land in depends on them: making responses
+  dearer pushed every rule toward doing nothing.
+- **Records come from one incident.** The engine sets a record, and resets its
+  count of generations without one, on a genome's best single incident. The
+  tuned rule's cheapest incident costs about 10 against a mean near 80, so an
+  early lucky one can hold mutation near its cap for much of a run, as in the
+  arena.
 
 ## Sizing
 

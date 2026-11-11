@@ -88,7 +88,7 @@ a seed, takes an action for every agent each step, and says how each episode
 ended and whether a higher or a lower score is better. The engine sizes the
 network from that and turns its outputs back into the game's own actions.
 
-Three games are built in and go by their short names, as in `train --game arena`.
+Four games are built in and go by their short names, as in `train --game arena`.
 Snake is in `evolvarium/games/snake`. The arena, in `evolvarium/games/arena`,
 puts a team of agents with health on one floor to eat, heal and chase a scripted
 rival that turns on them when they are hurt, and every agent plays the same
@@ -99,6 +99,46 @@ cart along a track, and the network gives the push as a force rather than
 picking a move. Its score is the number of steps the pole stayed up, out of 500
 by default, and `python -m evolvarium.games.cartpole.scripted` does the same for
 hand-written controllers.
+
+Cyber defence, in `evolvarium/games/cyber`, is autonomous cyber defence of a
+simulated enterprise network. Each seed draws a network of 12 to 18 hosts:
+workstations, a web server, a few servers, a domain controller and a customer
+database, each with its own firewall rules, cached credentials and flaws. An
+intruder gets in by phishing or through the web server and works toward
+stealing the database or setting off ransomware, by scanning, escalating its
+privileges, dumping credentials and moving with them. A security team of two
+analysts works a ranked queue of alerts, most of them false. For the host it is
+handed, each analyst watches, dismisses, investigates, isolates, releases or
+rebuilds it, resets the credentials or blocks the intruder's command channel.
+Investigating, isolating, rebuilding, resetting and blocking each cost something,
+isolation and rebuilds take hosts out of service, and the score is what the
+incident cost, so lower is better. Both analysts play the same network. `python -m
+evolvarium.games.cyber.scripted` plays hand-written defences on the held-out
+seeds, the figures a trained team is measured against, beside two bounds that
+read the truth of the incident.
+
+The simulation is a small abstraction of a security team's decisions, not
+evidence about any real network. It leaves out:
+
+- real protocols, packets, logs, vulnerabilities and tools: techniques are
+  actions with chances of working and of being seen, and every chance, rate,
+  duration and cost is chosen, not measured, with costs in units where the
+  whole database is 100;
+- alert types, correlation and threat intelligence: an alert has a severity, and
+  a mark when it is a lead from a finding, and an investigation never reports
+  an intruder that is not there;
+- more than one intruder, worms, insiders and supply-chain attacks: there are
+  three scripted intruders, which do not adapt;
+- prevention, such as patching cycles, email filtering and multi-factor
+  logons, and recovery beyond rebuilding a host, which understates what
+  ransomware costs;
+- networks of more than 18 hosts, and realistic false alert rates: each host
+  raises far more than a real one, so a small network keeps two analysts busy
+  and still leaves them time to investigate most hosts each day;
+- incidents without an intruder: every one has one;
+- a command channel per implant, and other hosts cut off from the internet:
+  every implant shares one channel, and only the database cannot reach it;
+- fatigue, shifts and handovers, legal reporting and the cost to reputation.
 
 Any other game is named `module:Class` and imported from wherever Python finds
 it, so `train --game package.module:Class` trains it and

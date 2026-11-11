@@ -316,6 +316,7 @@ BUDGETS = {
     "snake": {"episodes": 5, "search_steps": 2000, "ceiling": 1000},
     "cartpole": {},
     "arena": {"episodes": 5, "search_steps": 10_000, "ceiling": 1000},
+    "cyber": {"episodes": 5, "search_steps": 0},
 }
 
 

@@ -1,7 +1,8 @@
-"""The built-in games with a fault planted in each, for testing what finds them.
+"""Snake, cart-pole and the arena with a fault planted in each, for testing what
+finds them.
 
-Every game comes in five versions, one for each fault a game written in a hurry
-tends to have:
+Each of the three comes in five versions, one for each fault a game written in
+a hurry tends to have:
 
 * unscaled: its inputs in units of their own, some in the hundreds and some
   in thousandths sitting far from zero;
