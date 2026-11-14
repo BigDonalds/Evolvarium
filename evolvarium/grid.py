@@ -371,15 +371,16 @@ class GridGame:
             )
         self.base = game
         self.config = config
-        self.encoder = Encoder(grid, config.radius, config.horizon)
-        self.observation = Observation(self.encoder.names)
-        self._encode = self.encoder.encode
+        # Not `encoder`, which is the contract's method a profile times.
+        self.grid_encoder = Encoder(grid, config.radius, config.horizon)
+        self.observation = Observation(self.grid_encoder.names)
+        self._encode = self.grid_encoder.encode
         self._turning = grid.turning
         if grid.turning:
             self.actions = game.actions
             self._options = None
         else:
-            self.actions = Actions(Choice(part.name, self.encoder.turns))
+            self.actions = Actions(Choice(part.name, self.grid_encoder.turns))
             self._options = {step: option for option, step in grid.moves.items()}
         # The way each agent faces: the view's, or the last step it took.
         self._facing: dict[str, Cell] = {}

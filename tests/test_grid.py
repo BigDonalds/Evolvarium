@@ -17,7 +17,7 @@ import pytest
 from test_golden import GOLDEN, golden_settings
 from test_jobs import train
 
-from evolvarium import games, held_out, probe, settings
+from evolvarium import games, held_out, probe, profiling, settings
 from evolvarium.config import CONFIG, GridConfig, ProbeConfig
 from evolvarium.contract import STEPS, Actions, Choice, Game, Grid, View
 from evolvarium.evolution.evaluation import GameFault, make_runner
@@ -620,3 +620,11 @@ def test_runs_through_the_grid_are_compared_apart_from_runs_without_it():
     assert on != off
     assert held_out.describe(off) == "defaults"
     assert held_out.describe(on) == "grid.enabled=true"
+
+
+def test_a_profile_times_the_grid_encoder():
+    population = Population(forage_config(), seed=1)
+    genome = population.members[0].genome
+    parts = {part.name for part in profiling.split_inputs(population.context, genome, [700_000])}
+    # Forage's walls never open, so its searches all go through the shared one.
+    assert {"encode itself", "grid.py _together"} <= parts
