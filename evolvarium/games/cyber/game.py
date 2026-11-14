@@ -336,7 +336,8 @@ class CyberDefenceGame(Game):
             problems.between(f"soc.{name}", getattr(soc, name), 0, 1)
         for name in ("reimage_workstation", "reimage_server", "reimage_core"):
             problems.at_least(f"soc.{name}", getattr(soc, name), 1)
-        problems.at_least("soc.reset_cooldown", soc.reset_cooldown, 0)
+        # At 0 two analysts could each reset, and be charged for it, in one step.
+        problems.at_least("soc.reset_cooldown", soc.reset_cooldown, 1)
 
         for field in dataclasses.fields(costs):
             if field.name != "data":

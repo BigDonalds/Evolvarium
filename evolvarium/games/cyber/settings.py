@@ -60,7 +60,10 @@ class IntruderConfig:
     re_entries_max: int = 3
     re_entry_delay_min: int = 12
     re_entry_delay_max: int = 36
-    # A logon over the VPN with a stolen password, and how long before it.
+    # A logon over the VPN with a stolen user's password, and how long before
+    # it. Rebuilding the user's workstation leaves the password working: only a
+    # reset voids it, and the intruder logs back on once the workstation is in
+    # service.
     vpn_delay_min: int = 3
     vpn_delay_max: int = 8
     # A new command channel after the old one is blocked.
@@ -158,13 +161,14 @@ class CostConfig:
     reimage_workstation: float = 1.0
     reset: float = 6.0
     block: float = 0.1
-    # Charged at the end of an incident the intruder is still in.
+    # Charged however an incident ends, if the intruder is still in: holding a
+    # host, or a stolen credential other than the shared local admin password.
     unresolved: float = 10.0
 
 
 @dataclass(frozen=True)
 class IncidentConfig:
-    """How long an incident lasts. A step is half an hour."""
+    """How long an incident lasts. A step is half an hour, so 200 steps are 100 hours."""
 
     max_steps: int = 200
     # End the incident once the intruder is out for good and every host is back

@@ -54,16 +54,20 @@ def _get(view: Sequence[float], name: str) -> float:
 
 def _opening(view: Sequence[float]) -> str | None:
     """What every working rule does first: block a known command channel,
-    rebuild a confirmed host, and reset credentials once an admin foothold is
-    found and cleared."""
+    rebuild a confirmed host, and reset credentials once a foothold is found and
+    cleared, since a rebuild leaves the passwords taken from it working."""
     if _get(view, "c2_known"):
         return "block"
     if _get(view, "confirmed"):
         return "reimage"
-    if (_get(view, "admin_found") and _get(view, "reset_ready")
-            and not _get(view, "confirmed_hosts")):
+    if _reset_due(view):
         return "reset"
     return None
+
+
+def _reset_due(view: Sequence[float]) -> bool:
+    return bool(_get(view, "found") and _get(view, "reset_ready")
+                and not _get(view, "confirmed_hosts"))
 
 
 def _ordinary_workstation(view: Sequence[float]) -> bool:
@@ -106,6 +110,8 @@ def ladder(view: Sequence[float], rng: random.Random) -> str:
         if _get(view, "confirmed_admin") and _get(view, "reset_ready"):
             return "reset"
         return "reimage"
+    if _reset_due(view):
+        return "reset"
     if _get(view, "isolated"):
         return "release" if _get(view, "clean") else "investigate"
     if _get(view, "severity") == 1.0 or _get(view, "risk") >= 0.5:
@@ -171,18 +177,19 @@ def sweep(view: Sequence[float], rng: random.Random) -> str:
 
 
 # What `tuned` does with a host, by its kind and the strength of its open alerts.
-# Coordinate descent over every cell of tables like this one on dev seeds
-# 700000-700199, from the sweep, triage and quiet rules, ended here from the quiet
-# one, at a mean cost of 78.4, and on 800000-800199, which chose nothing, at 82.2.
-# It was the best of the three on both blocks.
+# Coordinate descent over every cell of tables like this one, and over what
+# starts a reset, on dev seeds 700000-700199, from the sweep, triage and quiet
+# rules, ended here from the triage one at a mean cost of 88.7, and at 91.9 on
+# 800000-800199, which chose nothing. It was the best of the three on the dev
+# seeds; the one from sweep did better on the others, 83.8 against 91.9.
 _TUNED = {
-    "workstation": {"none": "investigate", "low": "reimage", "medium": "isolate",
+    "workstation": {"none": "investigate", "low": "investigate", "medium": "investigate",
                     "high": "reimage"},
-    "admin_ws": {"none": "investigate", "low": "dismiss", "medium": "investigate",
-                 "high": "reimage"},
-    "server": {"none": "dismiss", "low": "investigate", "medium": "investigate",
-               "high": "investigate"},
-    "core": {"none": "dismiss", "low": "investigate", "medium": "investigate",
+    "admin_ws": {"none": "dismiss", "low": "dismiss", "medium": "investigate",
+                 "high": "investigate"},
+    "server": {"none": "investigate", "low": "investigate", "medium": "investigate",
+               "high": "reimage"},
+    "core": {"none": "investigate", "low": "investigate", "medium": "investigate",
              "high": "investigate"},
 }
 
@@ -239,9 +246,11 @@ def _judge(incident: Incident, analyst_index: int, rng: random.Random) -> str:
         if not incident.confirmed[h]:
             incident.confirm(h)
         return analyst(incident.view(analyst_index), rng)
-    if incident.alerts[h] or incident.clean[h] is False:
-        return "release" if incident.isolated[h] else "dismiss"
-    return "dismiss"
+    # A host it knows is clear still serves to block or reset from.
+    opening = _opening(incident.view(analyst_index))
+    if opening:
+        return opening
+    return "release" if incident.isolated[h] else "dismiss"
 
 
 def seer(incident: Incident, analyst_index: int, view: Sequence[float],

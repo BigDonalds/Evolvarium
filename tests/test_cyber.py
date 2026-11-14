@@ -32,6 +32,7 @@ from evolvarium.games.cyber.estate import (
     DOMAIN_ADMIN,
     FILE,
     IT_ADMIN,
+    LOCAL_ADMIN,
     WEB,
     WORKSTATION,
     password,
@@ -292,8 +293,8 @@ def test_an_action_is_abandoned_when_its_host_is_isolated():
     incident.isolated[h] = True
     respond(incident)
     assert incident.busy is None and incident.access[h] == 1
-    # Once for the host it lost, and once for the action.
-    assert incident.losses == [incident.t, incident.t]
+    # The host and the action went together, as one loss.
+    assert incident.losses == [incident.t]
 
     # A move whose target is isolated is given up, though its source still works.
     incident = ready(policy=acting(("move", "objective", "careful")))
@@ -348,9 +349,17 @@ def test_ransomware_encrypts_every_host_in_service_when_it_goes_off():
     assert incident.end == EndCause.RANSOMED
     assert spared not in incident.encrypted
     assert set(incident.encrypted) == set(range(incident.size)) - {spared}
-    expected = CYBER.costs.ransom + sum(incident.rebuild_steps[h] * incident.down_rate[h]
-                                        for h in incident.encrypted)
+    # Each host it encrypts is rebuilt: the effort as well as the downtime.
+    expected = CYBER.costs.ransom + sum(
+        incident.reimage_cost[h] + incident.rebuild_steps[h] * incident.down_rate[h]
+        for h in incident.encrypted)
     assert incident.costs["ransom"] == pytest.approx(expected)
+    # The step it went off on is charged like any other: the isolated host's
+    # downtime and the time on the domain controller, both steps.
+    assert incident.costs["downtime"] == pytest.approx(2 * incident.down_rate[spared])
+    assert incident.costs["dwell"] == pytest.approx(2 * incident.dwell_rate[dc])
+    # And it is still in, holding the domain controller.
+    assert incident.costs["unresolved"] == CYBER.costs.unresolved
 
 
 def test_isolating_the_domain_controller_pauses_staging_and_rebuilding_it_starts_over():
@@ -489,16 +498,52 @@ def test_rebuilding_removes_the_intruder_patches_the_flaw_and_takes_the_host_dow
         CYBER.soc.reimage_server * incident.down_rate[web])
 
 
-def test_rebuilding_a_workstation_costs_its_user_and_resets_their_password():
+def test_rebuilding_a_workstation_costs_its_user_and_leaves_their_password_stolen():
     incident = ready()
     h = first(incident, WORKSTATION)
     hold(incident, h, 0)
     incident.creds = password(h) | IT_ADMIN
     hand(incident, h)
     respond(incident, "reimage")
-    assert not incident.creds & password(h) and incident.creds & IT_ADMIN
+    assert incident.access[h] == 0
+    assert incident.creds == password(h) | IT_ADMIN
     assert incident.costs["effort"] == pytest.approx(
         CYBER.costs.reimage + CYBER.costs.reimage_workstation)
+
+
+def test_after_its_workstation_is_rebuilt_a_stolen_password_brings_it_back_by_vpn():
+    settings = cyber(intruder__vpn_delay_min=3, intruder__vpn_delay_max=3,
+                     detection__false_alerts=0.0)
+    incident = ready(settings, evict=True)
+    h = first(incident, WORKSTATION)
+    hold(incident, h, level=1)
+    incident.creds = password(h)
+    hand(incident, h)
+    respond(incident, "reimage")
+    # Out while its only foothold is rebuilt, and on its way back once it is in
+    # service, though no campaign is left: the password keeps it in.
+    waited = 0
+    while incident.reentry_kind != "vpn":
+        assert not incident.finished
+        respond(incident)
+        waited += 1
+    assert waited == CYBER.soc.reimage_workstation and not incident.rebuilding_until[h]
+    for _ in range(3):
+        respond(incident)
+    assert incident.access[h] == 1
+
+    # A reset after the rebuild stops it, and with nothing left the incident ends.
+    incident = ready(settings, evict=True)
+    hold(incident, h, level=1)
+    incident.creds = password(h)
+    hand(incident, h)
+    respond(incident, "reimage")
+    hand(incident, h)
+    respond(incident, "reset")
+    while not incident.finished:
+        respond(incident)
+    assert incident.end == EndCause.EVICTED and incident.access[h] == 0
+    assert incident.costs["unresolved"] == 0.0
 
 
 def test_a_reset_voids_stolen_credentials_but_leaves_implants():
@@ -668,6 +713,131 @@ def test_the_intruder_is_thrown_out_only_once_every_host_is_back_in_service():
     assert incident.t == 1 + CYBER.soc.reimage_workstation
 
 
+def test_a_credential_that_leads_nowhere_does_not_keep_the_incident_going():
+    settings = cyber(detection__false_alerts=0.0)
+    for creds, end in ((LOCAL_ADMIN, EndCause.EVICTED), (DOMAIN_ADMIN, EndCause.TIMEOUT)):
+        incident = ready(settings, evict=True)
+        incident.creds = creds
+        while not incident.finished:
+            respond(incident)
+        # The shared local admin password counts for nothing without a foothold.
+        # An administrator's counts as the intruder still in, though it is no
+        # way back in here: the incident runs on until a reset, and is charged
+        # for it at the end.
+        assert incident.end == end
+        assert incident.costs["unresolved"] == (0.0 if end == EndCause.EVICTED
+                                                else CYBER.costs.unresolved)
+
+
+def test_a_lost_incident_is_charged_for_an_intruder_still_in():
+    settings = cyber(intruder__objective="steal", intruder__exfil_steps=1)
+    incident = ready(settings, policy=acting(("act", "objective", "loud")))
+    db = incident.estate.db
+    relay = first(incident, APP)
+    hold(incident, relay, db)
+    incident.moves.append((relay, db))
+    respond(incident)
+    assert incident.end == EndCause.BREACHED
+    assert incident.costs["data"] == pytest.approx(CYBER.costs.data)
+    assert incident.costs["unresolved"] == CYBER.costs.unresolved
+
+
+def test_a_rebuild_still_under_way_at_the_end_is_charged_in_full():
+    incident = ready(cyber(incident__max_steps=20, detection__false_alerts=0.0))
+    dc = incident.estate.dc
+    for _ in range(15):
+        respond(incident)
+    hand(incident, dc)
+    respond(incident, "reimage")
+    while not incident.finished:
+        respond(incident)
+    assert incident.end == EndCause.TIMEOUT and incident.rebuilding_until[dc]
+    # The same as a rebuild at any other time: every step of it.
+    assert incident.costs["downtime"] == pytest.approx(
+        CYBER.soc.reimage_core * incident.down_rate[dc])
+
+
+def test_finding_the_intruder_again_counts_once_and_leads_only_from_new_moves():
+    settings = cyber(soc__find=1.0, detection__false_alerts=0.0)
+    incident = ready(settings)
+    h = first(incident, WORKSTATION)
+    other = first(incident, FILE)
+    hold(incident, h, other)
+    incident.moves.append((h, other))
+    incident.confirm(h)
+    respond(incident)
+    assert incident.findings == 1 and incident.alerts[other][-1][2]
+    leads = len(incident.alerts[other])
+    incident.confirm(h)
+    respond(incident)
+    assert incident.findings == 1 and len(incident.alerts[other]) == leads
+
+    # An investigation that misses it leaves the finding standing.
+    missing = cyber(soc__find=0.0, detection__false_alerts=0.0)
+    incident = ready(missing)
+    hold(incident, h)
+    incident.confirm(h)
+    incident.alerts[h] = [(3, 0, False)]
+    hand(incident, h)
+    respond(incident, "investigate")
+    for _ in range(CYBER.soc.investigate_steps):
+        respond(incident)
+    assert incident.confirmed[h] and not incident.clean[h]
+    assert incident.alerts[h] and incident.missed == 0
+
+
+def test_a_finding_since_the_last_reset_shows_and_the_rules_reset_on_it():
+    incident = ready(cyber(detection__false_alerts=0.0))
+    h = first(incident, WORKSTATION)
+    hold(incident, h, level=1)
+    incident.channel_up = False
+    incident.confirm(h)
+    found = INPUTS.index("found")
+    assert incident.view(0)[found] == 1.0 and not incident.admin_found
+    hand(incident, h)
+    respond(incident, "reimage")
+    # With the host cleared, every rule that works resets, from whatever host it
+    # holds, and so do the bounds.
+    quiet = first(incident, FILE)
+    hand(incident, quiet)
+    view = incident.view(0)
+    assert view[found] == 1.0 and not view[INPUTS.index("confirmed_hosts")]
+    for name in ("analyst", "triage", "hunter", "sweep", "tuned", "ladder", "nuke"):
+        assert scripted.POLICIES[name](view, random.Random(0)) == "reset", name
+    for bound in scripted.BOUNDS.values():
+        assert bound(incident, 0, view, random.Random(0)) == "reset"
+    respond(incident, "reset")
+    assert incident.view(0)[found] == 0.0
+
+    # A known command channel is blocked from any host first.
+    incident.c2_known = incident.channel
+    incident._share()
+    hand(incident, quiet)
+    view = incident.view(0)
+    assert scripted.oracle(incident, 0, view, random.Random(0)) == "block"
+
+
+def test_an_action_cut_off_as_a_way_back_falls_due_is_one_loss():
+    incident = ready(policy=acting(("escalate", "objective", "careful")))
+    h = first(incident, WORKSTATION)
+    hold(incident, h, level=1)
+    respond(incident)
+    assert incident.busy[0] == "escalate"
+    # A way back by VPN falls due with no password left to log on with.
+    incident.reentry_at = incident.t + 1
+    incident.reentry_kind = "vpn"
+    incident.isolated[h] = True
+    respond(incident)
+    assert incident.busy is None and incident.losses == [incident.t]
+    respond(incident)
+    assert incident.losses == [incident.t - 1]
+
+
+def test_a_false_alert_rate_too_small_to_raise_one_raises_none():
+    incident = Incident(cyber(detection__false_alerts=1e-17), 700_001)
+    assert not incident._false
+
+
 def test_the_fitness_terms_add_up_to_minus_the_cost():
     game = CyberDefenceGame()
     game.reset(700_009)
@@ -768,6 +938,7 @@ def test_the_defaults_pass_every_check():
     ((("detection.false_alerts", "6"),),
      "detection.false_alerts must be between 0 and 5, not 6.0"),
     ((("soc.analysts", "5"),), "soc.analysts must be between 1 and 4, not 5"),
+    ((("soc.reset_cooldown", "0"),), "soc.reset_cooldown must be at least 1, not 0"),
     ((("costs.data", "0"),), "costs.data must be above 0, not 0.0"),
     ((("incident.max_steps", "10"),), "incident.max_steps must be at least 20, not 10"),
 ])
@@ -997,8 +1168,20 @@ def test_ransomware_that_holds_the_backups_doubles_what_recovery_costs():
     hold(incident, incident.estate.dc, incident.estate.backup)
     respond(incident)
     assert incident.end == EndCause.RANSOMED
+    effort = sum(incident.reimage_cost[h] for h in incident.encrypted)
     rebuild = sum(incident.rebuild_steps[h] * incident.down_rate[h] for h in incident.encrypted)
-    assert incident.costs["ransom"] == pytest.approx(CYBER.costs.ransom + 2 * rebuild)
+    assert incident.costs["ransom"] == pytest.approx(CYBER.costs.ransom + effort + 2 * rebuild)
+
+    # A backup server cut off from the intruder keeps the backups as well as its disks.
+    incident = ready(settings, seed, policy=acting(("act", "objective", "loud")))
+    backup = incident.estate.backup
+    hold(incident, incident.estate.dc, backup)
+    incident.isolated[backup] = True
+    respond(incident)
+    assert incident.end == EndCause.RANSOMED and backup not in incident.encrypted
+    effort = sum(incident.reimage_cost[h] for h in incident.encrypted)
+    rebuild = sum(incident.rebuild_steps[h] * incident.down_rate[h] for h in incident.encrypted)
+    assert incident.costs["ransom"] == pytest.approx(CYBER.costs.ransom + effort + rebuild)
 
 
 def test_a_blocked_channel_comes_back_after_its_switch():
@@ -1057,9 +1240,10 @@ def test_an_analyst_sees_the_host_it_holds_as_placed():
         "risk": 7 / 12, "severity": 1.0, "age": 10 / 24, "fresh": 1.0, "lead": 1.0,
         "isolated": 1.0, "isolated_for": 0.5, "clean": 0.0, "confirmed": 0.0,
         "confirmed_admin": 0.0, "unreviewed": 1.0, "exposed": 1.0, "zone_risk": 3 / 12,
-        "time": 30 / CYBER.incident.max_steps, "free": 1.0, "open_cases": 3 / 8,
+        "free": 1.0, "open_cases": 3 / 8,
         "alert_rate": 0.0, "contained": 1 / incident.size, "confirmed_hosts": 0.25,
-        "c2_known": 0.0, "since_block": 1.0, "reset_ready": 1.0, "admin_found": 0.0,
+        "c2_known": 0.0, "since_block": 1.0, "reset_ready": 1.0, "found": 0.0,
+        "admin_found": 0.0,
         "slot": 0.0,
     }
     assert dict(zip(INPUTS, incident.view(0), strict=True)) == pytest.approx(expected)

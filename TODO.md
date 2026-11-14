@@ -70,9 +70,18 @@ Items still open at the baseline are in Snake-AI's
 - **Every chance, rate, duration and cost is chosen.** None is measured, and the
   order the hand-written defences land in depends on them: making responses
   dearer pushed every rule toward doing nothing.
+- **Three of the intruder's inputs say nothing a network could use well.** It is
+  asked to choose only when it is free and its channel is up, so `busy` and
+  `channel_up` never change when it does, and it sees the time, which the team
+  no longer does because a fixed end can be played. Before the intruder evolves
+  they should go or be replaced.
+- **Four incidents a genome tell close defences apart badly.** Two rules a few
+  points apart in mean cost rank the wrong way round about 45% of the time on
+  four incidents, and still 40% on sixteen, since an incident's cost varies by
+  about 60. Training sorts out large gaps but drifts near the bar.
 - **Records come from one incident.** The engine sets a record, and resets its
   count of generations without one, on a genome's best single incident. The
-  tuned rule's cheapest incident costs about 10 against a mean near 80, so an
+  tuned rule's cheapest incident costs about 15 against a mean near 90, so an
   early lucky one can hold mutation near its cap for much of a run, as in the
   arena.
 

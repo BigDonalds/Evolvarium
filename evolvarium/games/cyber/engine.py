@@ -7,7 +7,12 @@ comes back in if it was thrown out, its command channel's traffic may raise
 alerts, and it carries on with what it was doing or picks something new. Alerts
 that are due arrive, false ones among them, and old ones expire. Downtime and
 the intruder's time on hosts are charged. Then the incident may end, and if it
-goes on the queue is ranked and each free analyst is handed a host.
+goes on the queue is ranked and each free analyst is handed a host. A step the
+ransomware goes off on is charged the same way and ends there.
+
+However an incident ends, the rest of every rebuild under way is charged, as a
+detonation charges the rebuild of what it encrypts, and so is an intruder that
+is still in.
 
 An incident is a function of its seed and the analysts' responses. It draws
 from five random streams of its own, so the estate and the false alerts are the
@@ -54,8 +59,8 @@ INPUTS = (
     "risk", "severity", "age", "fresh", "lead",
     "isolated", "isolated_for", "clean", "confirmed", "confirmed_admin", "unreviewed",
     "exposed", "zone_risk",
-    "time", "free", "open_cases", "alert_rate", "contained", "confirmed_hosts",
-    "c2_known", "since_block", "reset_ready", "admin_found", "slot",
+    "free", "open_cases", "alert_rate", "contained", "confirmed_hosts",
+    "c2_known", "since_block", "reset_ready", "found", "admin_found", "slot",
 )
 # An analyst busy with an investigation sees nothing, and its response is ignored.
 BUSY_VIEW = (0.0,) * len(INPUTS)
@@ -102,6 +107,14 @@ class Incident:
         self.estate = estate = Estate(settings, estate_rng)
         size = self.size = estate.size
         roles = estate.roles
+        # Stolen credentials that count as the intruder still being in: a user's,
+        # which it can log back on with by VPN, and an administrator's or a
+        # service's, which a team has to reset after a breach though they are no
+        # way back in here. The shared local admin password counts only with a
+        # foothold to use it from.
+        self._matters = PRIVILEGED
+        for h in estate.workstations:
+            self._matters |= password(h)
         self.flaws = list(estate.flaws)
         self.rebuild_steps = tuple(
             soc.reimage_workstation if role in WORKSTATIONS
@@ -154,8 +167,10 @@ class Incident:
         self.switch_at = -1
         self.reentry_at = self.start
         self.reentry_kind = "first"
-        # Moves that landed, as (from, to), newest last.
+        # Moves that landed, as (from, to), newest last, and those a finding has
+        # already raised a lead for.
         self.moves: list[tuple[int, int]] = []
+        self._led: set[tuple[int, int]] = set()
         self.stolen = 0.0
         self.staged = 0
         self.ever: set[int] = set()
@@ -179,6 +194,9 @@ class Incident:
         self.c2_known = -1
         self.last_block = -1_000
         self.reset_at = -1_000
+        # Whether a foothold, and one held as admin, has been found since the
+        # last reset, so a reset is due.
+        self.found = False
         self.admin_found = False
 
         self.t = 0
@@ -205,6 +223,9 @@ class Incident:
         horizon = settings.incident.max_steps
         for h in range(size):
             rate = estate.noise[h]
+            # A rate too small to tell from zero raises nothing.
+            if 1.0 - rate == 1.0:
+                continue
             step = 0
             while rate > 0:
                 step += 1 + int(math.log(1.0 - noise.random()) / math.log(1.0 - rate))
@@ -250,6 +271,10 @@ class Incident:
     def usable_hosts(self) -> list[int]:
         return [h for h in range(self.size) if self.access[h] and self.usable(h)]
 
+    def still_in(self) -> bool:
+        """Whether the intruder holds a host, or a stolen credential that matters."""
+        return any(self.access) or bool(self.creds & self._matters)
+
     # ------------------------------------------------------------ alerts
 
     def _raise(self, h: int, technique: str, careful: bool = False) -> None:
@@ -275,9 +300,17 @@ class Incident:
             self.channel += 1
             self.switch_at = -1
         usable = self.usable_hosts()
-        if len(usable) < self._usable_count:
-            self.losses.append(t)
+        lost = len(usable) < self._usable_count
         self._usable_count = len(usable)
+        # An action whose host was cut off, or whose target was, is given up.
+        if self.busy is not None:
+            _, source, target, _, _ = self.busy
+            if not self.usable(source) or (target is not None and not self.in_service(target)):
+                self.busy = None
+                lost = True
+        # A step counts as one loss of ground, however much is lost in it.
+        if lost:
+            self.losses.append(t)
 
         held = any(self.access)
         if ((self.channel_up or not held) and not usable and self.reentry_at < 0
@@ -293,12 +326,6 @@ class Incident:
         if 0 <= self.reentry_at <= t:
             self._enter()
             return
-        # An action whose host was cut off, or whose target was, is given up.
-        if self.busy is not None:
-            _, source, target, _, _ = self.busy
-            if not self.usable(source) or (target is not None and not self.in_service(target)):
-                self.busy = None
-                self.losses.append(t)
         if not usable:
             return
 
@@ -549,12 +576,18 @@ class Incident:
                     self._detonate()
 
     def _detonate(self) -> None:
+        """Encrypts every host in service. The ransom is charged with the rebuild
+        of each, its effort and its downtime, and the step ends here."""
         estate = self.estate
         self.encrypted = [h for h in range(self.size) if self.in_service(h)]
-        # Backups the intruder holds are gone too, so recovery takes twice as long.
-        lost_backups = estate.backup >= 0 and self.access[estate.backup] == 2
-        rebuild = sum(self.rebuild_steps[h] * self.down_rate[h] for h in self.encrypted)
-        self.costs["ransom"] += self.settings.costs.ransom + rebuild * (2 if lost_backups else 1)
+        # Backups the intruder holds are gone too, so recovery takes twice as
+        # long. Isolated, the backup server is spared with what it keeps.
+        lost_backups = (estate.backup >= 0 and self.access[estate.backup] == 2
+                        and self.in_service(estate.backup))
+        effort = sum(self.reimage_cost[h] for h in self.encrypted)
+        downtime = sum(self.rebuild_steps[h] * self.down_rate[h] for h in self.encrypted)
+        self.costs["ransom"] += (self.settings.costs.ransom + effort
+                                 + downtime * (2 if lost_backups else 1))
         self.finished = True
         self.end = EndCause.RANSOMED
 
@@ -594,16 +627,20 @@ class Incident:
         self._share()
 
     def _share(self) -> None:
-        """The inputs about the incident as a whole, which every analyst sees."""
+        """The inputs about the incident as a whole, which every analyst sees.
+
+        Not the time: an incident ends at a fixed step only because a simulation
+        has to end somewhere, and a team that could see it coming would learn to
+        stop defending before it.
+        """
         t, size = self.t, self.size
-        soc, incident = self.settings.soc, self.settings.incident
+        soc = self.settings.soc
         while self._arrivals and self._arrivals[0] <= t - 8:
             self._arrivals.popleft()
         free = sum(1 for until in self.analyst_busy_until if until <= t)
         contained = sum(1 for h in range(size) if not self.in_service(h))
         confirmed = sum(1 for h in range(size) if self.confirmed[h])
         self._shared = [
-            t / incident.max_steps,
             free / soc.analysts,
             min(1.0, self.open_cases / 8),
             min(1.0, len(self._arrivals) / 8),
@@ -612,6 +649,7 @@ class Incident:
             1.0 if self.c2_known >= 0 else 0.0,
             min(1.0, (t - self.last_block) / 24),
             1.0 if t - self.reset_at >= soc.reset_cooldown else 0.0,
+            1.0 if self.found else 0.0,
             1.0 if self.admin_found else 0.0,
         ]
 
@@ -691,6 +729,9 @@ class Incident:
                 self._block()
 
     def _reimage(self, h: int) -> None:
+        """Rebuilds `h`, clearing the intruder off it. Credentials stolen from it
+        stay stolen: only a reset voids them, and until then a user's password
+        lets the intruder log back on by VPN."""
         estate = self.estate
         # Out of service from the next step for its whole rebuild.
         self.rebuilding_until[h] = self.t + self.rebuild_steps[h] + 1
@@ -706,11 +747,10 @@ class Incident:
         self.access[h] = 0
         self.dumped[h] = self.scanned[h] = self.careful_on[h] = False
         self.flaws[h] = False
-        if estate.roles[h] in WORKSTATIONS:
-            self.creds &= ~password(h)
         if h == estate.dc:
             self.staged = 0
         self.moves = [move for move in self.moves if h not in move]
+        self._led = {move for move in self._led if h not in move}
         self.acted.append(("reimage", h))
 
     def _reset(self) -> None:
@@ -725,7 +765,7 @@ class Incident:
             if self.access[h] == 2:
                 self.dumped[h] = False
         self.costs["effort"] += self.settings.costs.reset
-        self.admin_found = False
+        self.found = self.admin_found = False
         self.resets += 1
         self.acted.append(("reset", self.estate.dc))
 
@@ -753,7 +793,9 @@ class Incident:
             chance *= soc.find_unmanaged
         if self.access[h] and self._detect.random() < chance:
             self.confirm(h)
-        else:
+        elif not self.confirmed[h]:
+            # Missing the intruder where it was already found leaves the finding
+            # standing.
             if self.access[h]:
                 self.missed += 1
             self.clean[h] = True
@@ -763,22 +805,28 @@ class Incident:
         """Marks the intruder found on `h`, as an investigation that finds it does.
 
         The command channel's address comes out of the host, and every host a
-        landed move links it to raises a lead. The truth-reading bounds call this
-        directly; the analysts get here only by investigating.
+        landed move links it to raises a lead, once for each move. The
+        truth-reading bounds call this directly; the analysts get here only by
+        investigating.
         """
         t = self.t
+        if not self.confirmed[h]:
+            self.findings += 1
         self.confirmed[h] = True
+        self.clean[h] = False
         self.confirmed_admin[h] = self.access[h] == 2
-        self.findings += 1
         if self.detected_at < 0:
             self.detected_at = t - self.first_entry
         if self.channel_up:
             self.c2_known = self.channel
+        self.found = True
         if self.access[h] == 2:
             self.admin_found = True
-        for source, target in self.moves:
+        for move in self.moves:
+            source, target = move
             other = target if source == h else source if target == h else -1
-            if other >= 0:
+            if other >= 0 and move not in self._led:
+                self._led.add(move)
                 self._pending.setdefault(t, []).append((other, HIGH, True, True))
         # A finding made outside a step shows in every view at once.
         self._share()
@@ -798,6 +846,9 @@ class Incident:
                 self._find(h)
         self._intruder_phase()
         if self.finished:
+            # The ransomware went off.
+            self._charge()
+            self._settle()
             return
         for h, severity in self._false.get(t, ()):
             self._pending.setdefault(t, []).append((h, severity, False, False))
@@ -816,11 +867,20 @@ class Incident:
             else:
                 self.false_alerts += 1
         expire = self.settings.detection.expire_after
-        footholds = 0
         for h in range(self.size):
             alerts = self.alerts[h]
             if alerts and not self.isolated[h] and t - alerts[0][1] >= expire:
                 self.alerts[h] = [a for a in alerts if t - a[1] < expire]
+        self._charge()
+        self._end_checks()
+        if not self.finished:
+            self._rank()
+
+    def _charge(self) -> None:
+        """A step of downtime for every host out of service, and of the intruder's
+        time on every host it holds."""
+        footholds = 0
+        for h in range(self.size):
             if not self.in_service(h):
                 self.costs["downtime"] += self.down_rate[h]
             if self.access[h]:
@@ -828,32 +888,36 @@ class Incident:
                 footholds += 1
         self.dwell_steps += footholds
         self.footholds_peak = max(self.footholds_peak, footholds)
-        self._end_checks()
-        if not self.finished:
-            self._rank()
 
     def _end_checks(self) -> None:
         if self.stolen >= 1.0 - 1e-9:
-            self.finished = True
-            self.end = EndCause.BREACHED
+            self._close(EndCause.BREACHED)
         elif (self.settings.incident.end_on_eviction and self.first_entry >= 0
-              and not any(self.access) and self.creds == 0 and self.entries == 0
-              and self.reentry_at < 0 and all(self.in_service(h) for h in range(self.size))):
-            self.finished = True
-            self.end = EndCause.EVICTED
+              and not self.still_in() and self.entries == 0 and self.reentry_at < 0
+              and all(self.in_service(h) for h in range(self.size))):
+            self._close(EndCause.EVICTED)
         elif self.t >= self.settings.incident.max_steps:
-            self._timeout()
+            self._close(EndCause.TIMEOUT)
 
-    def _timeout(self) -> None:
+    def _close(self, end: EndCause) -> None:
         self.finished = True
-        self.end = EndCause.TIMEOUT
-        if any(self.access) or self.creds & PRIVILEGED:
+        self.end = end
+        self._settle()
+
+    def _settle(self) -> None:
+        """What an incident that has ended still costs: the rest of every rebuild
+        under way, and an intruder still in."""
+        for h in range(self.size):
+            if self.rebuilding_until[h]:
+                left = max(0, self.rebuilding_until[h] - 1 - self.t)
+                self.costs["downtime"] += left * self.down_rate[h]
+        if self.still_in():
             self.costs["unresolved"] += self.settings.costs.unresolved
 
     def stop(self) -> None:
         """Ends the incident where it stands, as if its time had run out."""
         if not self.finished:
-            self._timeout()
+            self._close(EndCause.TIMEOUT)
 
     @property
     def lost(self) -> bool:

@@ -10,6 +10,152 @@ directly.
 
 ---
 
+## Cyber defence checked again - faults fixed before a defender trains on it
+
+A trained defender minimises what an incident costs, so it finds any fault in
+the rules or the costs and uses it, and what it learned would then be the fault
+and not a defence. Before one trains, the game was checked again: six
+read-throughs of the code, each after one kind of fault, and a fuzzer. Every
+finding was then reproduced by a second check before it counted, and 24 of 25
+held up. Every figure in the entry below was taken on the game before these
+fixes, and so were the audit's counts here. The gate and the held-out table here
+replace that entry's. Its other figures stand only for that game, such as
+tuned's 13 false alerts for every true one, 9.0 now on the dev seeds.
+
+**No illegal moves.** A checker around each intruder action, over about 5,600
+incidents of random and scripted intruders against random and written
+defences, found none acting from a host it could not use, crossing a firewall
+rule, using a credential it did not hold, or stealing or setting off
+ransomware without the access the rules ask for. Over 49,087 steps of random
+play no two analysts were handed the same host, none acted on a host it was
+not handed, and every response that could not apply was ignored and cost
+nothing. Every input stayed between 0 and 1. Played beside a twin of the same
+seed with no intruder and fed the same responses, 17,788 views were identical
+until the first true alert or finding, so no view gives the intruder away. A
+ledger kept apart from the engine matched every cost term over 2,600 incidents.
+The fuzzer played 6,000 incidents, 845,462 steps, under 33 variants of the
+settings and checked the rules after every step.
+
+**Faults found.** All fixed:
+
+- an incident did not end once the intruder was out for good if the shared
+  local admin password was all it had left, which leads nowhere without a
+  foothold. 24 of 200 dev incidents under the old tuned ran on from there to
+  the step limit, for 102 steps and 32.3 more on average. With the way back by
+  VPN open it no longer comes up in play, since the user's password taken with
+  it now stays stolen too;
+- the way back by VPN never opened. Rebuilding a workstation voided the password
+  stolen from it, so the intruder never held one without its workstation, and
+  the branch could not run. Rebuilding a workstation leaves its user's password
+  as it was, so now only a reset voids it, and until one the intruder logs back
+  on once the workstation is in service;
+- a lost incident charged nothing for an intruder still in, though the setting
+  says it should, and every ending now charges it;
+- the step the ransomware went off on skipped that step's downtime and the
+  intruder's time on hosts;
+- ransomware charged the downtime of rebuilding what it encrypted but not the
+  rebuilds themselves, and destroyed the backups on a backup server it had
+  spared because it was isolated;
+- a rebuild under way at the end of an incident was charged only up to the
+  end, so one started late cost a fraction of one started early. The rest is
+  charged now, as for the hosts a detonation encrypts;
+- investigating a confirmed host again could mark it clean while it stayed
+  confirmed, and each finding raised its leads again;
+- one isolation counted twice in the intruder's view of the ground it lost, and
+  a step now counts once however much is lost in it;
+- two settings the checks let through broke the game: a reset cooldown of 0,
+  which let two analysts each reset and pay for it in one step and is refused
+  now, and a false alert rate too small to tell from 0, which divided by zero
+  and now raises no alerts.
+
+**What the team sees.** The time is gone. An incident ends at step 200 only
+because a simulation has to end somewhere, and the old tuned with both analysts
+only watching from step 160 saved 2.9 a game on the dev seeds, 1.6 once the
+first fault was fixed, and lost no more incidents. In its place is whether a
+foothold has been found since the last reset, which a real team knows and which
+says a reset is due, now that a rebuild leaves the stolen passwords working.
+Analysts still see 31 inputs.
+
+**What the entry below gets wrong.** The IT administrator's workstation and the
+domain controller reach every host. Ordinary workstations reach the domain
+controller and every server but the backup server, and each other on a flat
+user network. Servers reach each other and the domain controller, and of the
+servers only the application and backup servers reach the database. The backup
+server holds a copy of the database that can be stolen straight out of it,
+which half of the old tuned's stolen data left through. That stays, as backups
+are a common way for data to leave. 200 steps are 100 hours, a little over four
+days. The IT administrator's workstation is costed as a server only while it is
+out of service. A phishing campaign already sent lands even if the intruder has
+a host again by then, and an entry brings up a new command channel that every
+implant uses, even while the old one is blocked. A lead always marks a host the
+intruder holds, since an investigation never reports one that is not there.
+Among quiet hosts the isolated ones are handed out first, and a confirmed host
+stays in the queue, raised by 6, or by 1 if it is isolated, until it is
+rebuilt.
+
+**The rules.** The opening the working rules share resets once a foothold has
+been found and every confirmed host is cleared, rather than only after an admin
+one, and ladder does the same. The bounds block and reset from any host they
+are handed. Tuned was searched again, the same way, with what starts a reset
+searched too. The search from triage did best on the dev seeds, at 88.7, and
+came to 91.9 on seeds 800000 to 800199. With what starts a reset left free, the
+searches from sweep and quiet settled on resetting only after an admin finding,
+at 99.3 and 116.7. Held to resetting after any finding they came to 89.9 and
+90.7, and 83.8 and 99.1 on the other seeds. Tuned investigates every ordinary
+workstation and server it is handed, alert or not, and rebuilds one on a high
+alert, leaves the IT administrator's workstation alone until a medium alert,
+investigates the domain controller and the database without rebuilding either
+on suspicion, and resets after any finding. The gate the costs were set by still
+holds, on dev seeds 700000 to 700199: an undefended incident is lost 99% of the
+time, random play and lockdown cost 381.7 and 444.5 against 158.5 for doing
+nothing, rebuilding every workstation costs 212.4, and tuned, at 88.7, costs
+0.56 of doing nothing and 2.85 times the seer's 31.1.
+
+**The hand-written defences, on held-out seeds.** Frozen, then played once on
+seeds 900000 to 900059:
+
+| rule | cost | lost | thrown out | investigations | rebuilt | resets |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| idle | 159.3 | 60 | 0 | 0.0 | 0.0 | 0.0 |
+| random | 382.8 | 15 | 5 | 29.8 | 31.1 | 6.0 |
+| lockdown | 441.2 | 15 | 0 | 0.0 | 0.0 | 0.0 |
+| reimage_high | 201.7 | 29 | 0 | 0.0 | 13.0 | 0.0 |
+| nuke | 196.2 | 5 | 7 | 47.9 | 94.4 | 0.5 |
+| ladder | 171.3 | 10 | 31 | 35.0 | 6.8 | 4.2 |
+| analyst | 142.1 | 12 | 3 | 44.4 | 5.6 | 3.6 |
+| triage | 110.0 | 14 | 37 | 51.0 | 5.7 | 3.6 |
+| hunter | 118.3 | 15 | 36 | 55.7 | 6.4 | 4.0 |
+| sweep | 139.4 | 13 | 16 | 40.7 | 36.1 | 1.5 |
+| tuned | 91.0 | 8 | 47 | 53.5 | 9.3 | 3.1 |
+| seer, a bound | 32.7 | 0 | 60 | 0.0 | 3.9 | 3.1 |
+| oracle, a bound | 28.6 | 0 | 60 | 0.0 | 3.3 | 3.1 |
+
+Tuned, the bar for a trained team, costs 0.57 of doing nothing and 2.78 times
+the seer, and is weakest against the intruder that rushes, at 140 against a
+ransom crew and 132 against a thief. It replaces the 69.3 below, which was
+measured on the game with the faults above. Doing nothing came to 143.4 there on
+both the held-out and the dev seeds, which looked copied. Played again on that
+game it comes to 143.39 held-out and 143.44 on the dev seeds, from different
+incidents. Sweep does the same here, 139.373 against 139.368.
+
+**Checking it.** `tests/test_cyber.py` has 88 tests. The new ones check that a
+password stolen from a rebuilt workstation brings the intruder back by VPN and a
+reset stops it, that the shared local admin password on its own lets an
+incident end while an administrator's keeps it going and is charged at the end,
+that a lost incident is charged for an intruder still in, that a rebuild under
+way at the end is charged in full, that finding the intruder again counts no
+new finding and raises leads only from new moves, that a finding since the last
+reset shows and every working rule and both bounds reset on it once the host is
+cleared, that an action cut off as a way back falls due is one loss, and that a
+false alert rate too small to raise one raises none. The
+ransomware tests check the step it goes off on is charged, that rebuilding what
+it encrypts includes the effort, and that an isolated backup server keeps its
+backups. The whole suite, 845 passed and 2 skipped, took 140 s. The target for
+training a defender goes in an entry of its own, above this one, before any
+training.
+
+---
+
 ## Cyber defence - a security team against an intruder on a simulated network
 
 The engine trains games, and the project claims it isn't limited to them.
