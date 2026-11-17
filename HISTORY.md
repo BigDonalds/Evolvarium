@@ -10,6 +10,90 @@ directly.
 
 ---
 
+## Cyber defender - a team trained at the defaults, against the tuned rule
+
+**The target, set before any of its runs.** A security team trains on the
+cyber defence simulation at the default settings, and its cost on the held-out
+incidents is set against tuned's, the best of the scripted defences, a table
+found by search. Six pilots came first, two on each of the three forms the game
+has had, all on training seeds 11 and 12, with their picks chosen on selection
+incidents from seed 800000 and played on dev seeds only.
+
+**The pilots.** On the game before the fixes two entries below, both learnt to
+investigate, rebuild, reset and block. Their picks cost 87.2 and 96.4 on dev
+seeds 700000 to 700199, against 78.4 for that game's tuned and 109.2 for
+triage, and threw the intruder out of 146 and 86 of the 200 incidents. On the
+game after the fixes, both stopped at one rule, as the entry below tells. On
+this game, with a second factor on most users' VPN logons, one of each. Seed
+11's pick dismisses 73% of the time and isolates the rest, never resets, and
+costs 114.1 on dev seeds 700200 to 700999. Seed 12's investigates, rebuilds,
+resets and blocks, throws the intruder out of 830 of 1,000 dev incidents, and
+costs 94.7 on 700200 to 700999, against 98.4 for tuned and 115.6 for triage.
+Its population was still getting cheaper at generation 500.
+
+**The target.** Five runs train for 500 generations each, as the pilots did,
+at the default settings, with seeds 1 to 5, on the commit that carries this
+target. Each run's genome is chosen from its generation-500 checkpoint and the
+past champions its replays hold, by `export --pick best-average` on 48
+selection incidents from seed 800000, and the five play the 60 held-out seeds
+in one `evaluate`. A run passes if its pick's mean cost there, read from the
+file `--json` writes, is below tuned's on the same incidents, 100.44 unrounded,
+which `scripted.play` gives again on those seeds. The defence counts as learnt
+if at least 3 of the 5 pass. These incidents are hard for tuned: on 2,800 dev
+incidents that chose nothing, 700200 to 702999, it averages 94.8, so the bar
+sits about 5 above its usual cost, and an incident's cost under a trained team
+follows its cost under tuned only loosely, with correlations of 0.2 to 0.5. A
+run truly level with tuned on average therefore passes about two times in
+three, one 15 better almost always and one 15 worse about 1 time in 12. The
+five runs play the same incidents, so they don't pass or fail independently,
+and a team level with tuned counts as learnt about four times in five, one 15
+better almost always and one 15 worse about 1 time in 80. The picks' means
+against tuned's 94.8 are given beside the result and decide nothing.
+
+**What counts.** Every run trains to generation 500. None is stopped early on
+purpose, extended, dropped or replaced by another seed. A run cut off part way
+trains again from its seed, which repeats it exactly, and the cut-off part is
+set aside and named with the result. A run not at generation 500 by 18
+December is listed as unfinished and counts as not passing. An unfinished run
+has no pick, so the prediction is read over the picks there are, its first
+item out of those, and an item that can't be measured counts as failed. Only a
+fault that
+stops a run or breaks what a team sees or pays is a reason to change the engine
+or the game, never a score. If either has to change before the held-out
+`evaluate`, all five start again on the commit that fixes it, tuned is played
+once more on the held-out seeds there and its mean becomes the bar, the
+prediction stands as written here, and the fault, the fix and every figure
+from the runs before it are reported with the result. A fault found after the
+held-out `evaluate` starts no run again and is named with the result.
+
+**Prediction.** Some runs learn the whole defence and some stop at the one
+rule, as the last two pilots did, and the defence is not learnt at the
+defaults. In numbers:
+
+- between 1 and 4 of the 5 picks reset in at least 30 of their 60 held-out
+  incidents;
+- each of those costs between 75 and 115 there;
+- each of the others costs between 100 and 135, and dismisses or isolates on
+  at least 90% of the steps an analyst is handed a host;
+- at most 2 runs pass.
+
+The prediction holds only if all four do. Each is read on the figures as they
+come, so noise alone can fail one, and a failed prediction says little on its
+own. None of the items is a test.
+
+**Reported with it.** For each pick, its held-out mean, the incidents lost and
+thrown out, its cost by term, and its difference from tuned on the same
+incidents with a 95% interval from a paired t over the 60; the five picks' mean
+against tuned's with an interval across the picks; and for each run its
+training time. Tuned's cost on each incident comes from `scripted.play`. Shares
+of responses, resets and cost by term come from playing each pick's held-out
+games again after the `evaluate`, which repeats them exactly. A step counts
+when an analyst is handed a host, over both analysts and all 60 incidents, and
+a response counts as the network gave it, whether or not it changed anything.
+An incident counts as reset in if a reset took effect in it.
+
+---
+
 ## Cyber defence - a second factor on the VPN
 
 **Why.** After the fixes in the entry below, a password stolen from any user
