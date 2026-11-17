@@ -92,6 +92,71 @@ when an analyst is handed a host, over both analysts and all 60 incidents, and
 a response counts as the network gave it, whether or not it changed anything.
 An incident counts as reset in if a reset took effect in it.
 
+**Against the target.** Learnt: 4 of the 5 runs pass. Their picks cost 94.2,
+80.3, 94.0 and 84.8 on the held-out seeds, in the file `--json` wrote, against
+tuned's 100.44 on the same incidents, and the fifth costs 105.6.
+
+| seed | selection | held-out | against tuned, 95% interval | lost | thrown out | reset in | dismiss or isolate | minutes training |
+| ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 76.24 | 94.2 | -6.3, -25.2 to +12.6 | 6 | 52 | 57 | 0.0% | 11.6 |
+| 2 | 68.66 | 80.3 | -20.1, -37.1 to -3.1 | 4 | 50 | 54 | 1.1% | 12.1 |
+| 3 | 116.59 | 105.6 | +5.2, -18.4 to +28.9 | 20 | 0 | 0 | 100.0% | 13.7 |
+| 4 | 78.52 | 94.0 | -6.5, -25.5 to +12.5 | 9 | 42 | 52 | 1.6% | 12.3 |
+| 5 | 77.28 | 84.8 | -15.6, -31.7 to +0.5 | 7 | 47 | 51 | 0.0% | 11.8 |
+
+Selection is the pick's mean over its 48 selection incidents, from its model
+file, the next six columns are over the 60 held-out incidents, and minutes
+training is the run's time to generation 500. Reset in counts the incidents a
+reset took effect in, and dismiss or isolate the share of the steps an analyst
+was handed a host. Cost by term over the same incidents, from the replays:
+
+| seed | data | ransom | downtime | dwell | effort | unresolved |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 4.0 | 9.4 | 37.1 | 2.8 | 39.8 | 1.0 |
+| 2 | 3.6 | 7.6 | 33.4 | 4.0 | 30.5 | 1.2 |
+| 3 | 26.7 | 9.7 | 46.8 | 12.3 | 0.1 | 10.0 |
+| 4 | 6.5 | 17.5 | 34.2 | 3.4 | 30.2 | 2.2 |
+| 5 | 6.9 | 12.5 | 27.1 | 3.1 | 33.3 | 1.8 |
+
+Four picks investigate, rebuild and reset: they investigate on 54% to 71% of
+the steps they are handed a host, rebuild on 15% to 22% and reset in 51 to 57
+incidents, and spend 30 to 40 an incident on effort. Seed 4's also blocks on
+24% of its steps, seeds 1 and 5's on under 1%, and seed 2's never. Seed 3's
+dismisses on 97% of its steps and isolates on 2.9%, with one watch in 19,108,
+much as the picks that stopped at the one rule did. It spends almost nothing on
+effort and pays instead in data, downtime, the intruder's time on hosts and an
+unresolved charge in every incident, and it lost 20 incidents and threw the
+intruder out of none. The five picks average 91.8, 8.7 below tuned, with a 95%
+interval across the picks of -20.8 to +3.5. All five runs reached generation
+500, none was set aside, and nothing in the engine or the game changed.
+
+**The prediction.** It fails on its last item. Four picks reset in at least 30
+of their incidents, inside 1 to 4. They cost 80.3 to 94.2, inside 75 to 115,
+and seed 3's costs 105.6 and dismisses or isolates on all but one of its 19,108
+steps, inside 100 to 135 and at least 90%. But four runs pass, where at most
+two were predicted, and the defence is learnt, where the prediction said it
+would not be. It followed the last two pilots, one of which learnt to reset and
+one of which stopped at the one rule. Four of these five reset, and all four
+pass.
+
+**Against 94.8.** As the target said, these incidents are hard for tuned,
+which averages 94.8 on 2,800 dev incidents, so the bar sits about 5 above its
+usual cost. Against that 94.8, seeds 2 and 5 cost 14.5 and 10.0 less, seeds 1
+and 4 under 1 less, and seed 3 about 11 more, which decides nothing. On the
+paired intervals only seed 2's pick is cheaper than tuned on these incidents.
+Seed 5's reaches +0.5, and those of seeds 1, 3 and 4 straddle 0, which doesn't
+show them level with tuned either. So the defence is learnt by the target's
+rule, one pick of the five is shown to beat tuned, and one run in five still
+stopped at the one rule.
+
+**How long it took.** The five runs took 61.6 minutes between them, 11.6 to
+13.7 each on seven workers, from 22:08 to 23:10 on 16 November, and every run
+was on mains power when it started and when it finished. Exporting the picks
+took 4 to 5 seconds each, and the held-out `evaluate` and the replays about a
+minute more. The held-out games were played once, by `evaluate`, and the
+replays for the shares, resets and cost by term repeated each pick's costs
+incident for incident.
+
 ---
 
 ## Cyber defence - a second factor on the VPN
