@@ -290,7 +290,7 @@ class CyberDefenceGame(Game):
         problems.between("estate.servers_max", estate.servers_max,
                          min(estate.servers_min, most), most)
         for name in ("flat_user_lan", "shared_local_admin", "web_flaw", "server_flaw", "dc_flaw",
-                     "admin_creds_on_server", "domain_admin_on_admin_ws", "unmanaged"):
+                     "admin_creds_on_server", "domain_admin_on_admin_ws", "unmanaged", "vpn_mfa"):
             problems.between(f"estate.{name}", getattr(estate, name), 0, 1)
 
         for name in ("careful_share", "smash_share", "ransom_share", "phish_entry",
@@ -384,6 +384,10 @@ class CyberDefenceGame(Game):
         if estate.unmanaged == 0:
             for name in ("detection.no_agent", "soc.find_unmanaged"):
                 unused[name] = "estate.unmanaged is 0, so every host runs an endpoint agent"
+        if estate.vpn_mfa == 1:
+            for name in ("intruder.vpn_delay_min", "intruder.vpn_delay_max", "detection.entry_vpn"):
+                unused[name] = ("estate.vpn_mfa is 1, so no stolen password brings the "
+                                "intruder back by VPN")
         if settings.detection.false_alerts == 0:
             unused["detection.noise_spread"] = (
                 "detection.false_alerts is 0, so no host raises false alerts")

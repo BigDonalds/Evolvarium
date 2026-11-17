@@ -10,6 +10,138 @@ directly.
 
 ---
 
+## Cyber defence - a second factor on the VPN
+
+**Why.** After the fixes in the entry below, a password stolen from any user
+brought the intruder back over the VPN until a reset, and two defenders trained
+on that game at the default settings, on seeds 11 and 12 for 500 generations,
+both stopped at one rule. Their picks cost 121.2 and 123.5 on dev seeds 700000
+to 700199, against 88.7 for that game's tuned, 112.7 for triage and 158.5 for
+doing nothing. They dismissed 89% and 97% of the time and isolated nearly all
+the rest, with a few dozen releases and a few hundred watches in 1,000
+incidents, and never investigated, rebuilt or reset, so the intruder was never
+thrown out. The rule they come down to is to isolate an ordinary workstation
+with an alert that is not isolated yet and dismiss everything else, isolated
+ones included, which costs 122.3 on the same seeds and 119.1 over 700000 to
+700999. Seed 12's pick plays it almost exactly and seed 11's a looser version,
+and over 700000 to 700999 the two cost 118.0 and 119.5.
+
+The network was big enough. A copy fitted to that tuned by gradient descent,
+in a script outside the engine, on tuned's views from dev seeds 700000 to
+700099, gives tuned's response on 99.99% of the views from 700100 to 700199 and
+plays those incidents at 82.34, as tuned does. What held the picks was the cost.
+Blocking needs a channel an investigation turned up, and rebuilding on alerts
+alone costs more than doing nothing, as reimage_high shows, so selection saw no
+gain in rebuilding, resetting or blocking until something investigated. Added
+to the one rule, investigating cost 23 more on its own, 44 more with
+rebuilding, 7.5 more with rebuilding and resetting, and still 1.8 more with
+blocking as well. Of 1,024 rules built from ten such changes, none one change
+away from the one rule cost less. Cheaper ones exist, such as triage at 112.7,
+or the one rule with the servers, the domain controller, the database and the
+administrator's workstation investigated, then rebuilding and resetting, at
+111.7, but each is several changes away. Rebuilding without a reset was the
+costliest point on the way, since a rebuilt workstation's password stayed
+stolen and the intruder logged back on with it once the workstation was back
+in service. With the way back by VPN switched off in a script, investigating
+and rebuilding without a reset cost 118.8, below the one rule's 122.3 and 41
+below investigating alone, which at 160.1 costs about what doing nothing does,
+so a run starting from nothing could get there; switching investigation on
+from the one rule still cost 23. The early generations held genomes that
+investigated and rebuilt, and in generations 0 to 3 of the two runs the best
+genome investigated in six of the eight and rebuilt in seven, but
+cheaper passive ones won, and after generation 100 only about 1 genome in 20
+investigated at all.
+
+Two things in the engine made it harder, though the costs above would have
+stopped a run without them. Every genome in a generation plays the same four
+incidents, and the part of a 4-incident mean that isn't shared with the others
+is off by 13 to 15, against a true spread of 6 to 11 between genomes, so a
+genome's rank in its generation says little about its true cost. And a record
+is the single cheapest incident of the generation's best genome: on seed 12 one
+set in generation 3 was never beaten, and on seed 11 one from generation 33
+stood until generation 353, which held the mutation rate at its cap for 97%
+and 89% of the generations.
+
+A bonus in the fitness for findings, cleaned hosts, resets, blocks or throwing
+the intruder out might have carried a run past the one rule. For the bonuses,
+766 rules were played: 38 over 1,000 dev seeds, the two picks among them, and
+over 200 the 216 different ones among the 1,024 and 512 around the rule at
+111.7. A bonus above 0.07 to 1.6 an event, or about 9 for throwing the
+intruder out, ranks some rule above one that costs clearly less, and at those
+sizes or below it moves the chance that four incidents rank two rules a change
+apart the right way round by -0.8 to +1.0 points in 100, on average over
+twelve such pairs. Larger ones pay for what is not defence:
+investigating and doing nothing with what is found, never resetting so rebuilt
+hosts are taken and cleaned again, resetting blindly, blocking the same channel
+again. The fitness stays the cost.
+
+**The second factor.** A second factor on VPN logons is a common control, and
+the README had it among what the simulation left out. `estate.vpn_mfa`, 0.8 by
+default, is the chance a user's VPN logons ask for a second factor, drawn per
+user for each seed. A stolen password still opens that user's workstation from
+a foothold inside, but over the VPN it gets the intruder nothing, and it no
+longer counts as the intruder still being in. 0.8 leaves a fifth of users'
+passwords a way back, so a reset still matters: tuned without one costs 123.5
+on dev seeds 700000 to 700199 against 83.2, and 94.1 against 76.3 with a second
+factor for every user, since a reset also voids the admin and service
+credentials. Who needs one is drawn
+after everything else in the estate, so the networks, flaws, credentials and
+false alerts of every seed are as they were. Over dev seeds 700000 to 700199,
+1,314 of the 1,636 users need one, 80.3%. With every user asked for one,
+`settings` says the VPN's delays and alert chance have no effect.
+
+**Tuned again.** Searched again on dev seeds 700000 to 700199: from sweep,
+triage and quiet with what starts a reset left free, then from sweep and quiet
+with a reset after any finding. The lowest of the five on the dev seeds came
+from sweep with a reset after any finding, at 83.2, and searching further from
+it found nothing lower. It came to 87.1 on 800000 to 800199, which chose
+nothing; the other four came to 83.6 to 88.6 on the dev seeds and 87.8 to
+104.4 on 800000 to 800199. Its table is the first cyber entry's tuned table
+but for one cell, a high alert on the IT administrator's workstation, which it
+isolates instead of rebuilding, and it
+resets after any finding, where that one reset only after an admin one. On dev
+seeds 700200 to 700999, which chose nothing either, it costs 98.4. The gate
+still holds, on 700000 to 700199: an undefended incident is lost 99% of the
+time, random play and lockdown cost 378.0 and 444.5 against 158.5 for doing
+nothing, rebuilding every workstation costs 177.6, and tuned costs 0.52 of
+doing nothing and 2.69 times the seer's 30.9.
+
+**The hand-written defences, on held-out seeds.** Frozen, then played once on
+seeds 900000 to 900059:
+
+| rule | cost | lost | thrown out | investigations | rebuilt | resets |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| idle | 159.3 | 60 | 0 | 0.0 | 0.0 | 0.0 |
+| random | 381.7 | 16 | 6 | 29.6 | 30.8 | 6.0 |
+| lockdown | 441.2 | 15 | 0 | 0.0 | 0.0 | 0.0 |
+| reimage_high | 200.0 | 29 | 1 | 0.0 | 12.9 | 0.0 |
+| nuke | 169.1 | 3 | 21 | 42.2 | 84.4 | 0.5 |
+| ladder | 168.7 | 10 | 31 | 34.9 | 6.7 | 4.1 |
+| analyst | 139.3 | 12 | 3 | 44.3 | 5.5 | 3.5 |
+| triage | 105.4 | 14 | 37 | 50.1 | 5.5 | 3.6 |
+| hunter | 116.1 | 15 | 37 | 54.8 | 6.3 | 3.9 |
+| sweep | 107.9 | 9 | 41 | 34.4 | 29.6 | 1.2 |
+| tuned | 100.4 | 6 | 44 | 46.6 | 19.9 | 2.2 |
+| seer, a bound | 32.6 | 0 | 60 | 0.0 | 3.9 | 3.1 |
+| oracle, a bound | 28.6 | 0 | 60 | 0.0 | 3.3 | 3.1 |
+
+Tuned, the bar for a trained team, costs 0.63 of doing nothing and 3.08 times
+the seer, and is weakest against the intruder that rushes, at 145 against a
+ransom crew and 208 against a thief. Triage, which never rebuilds on an alert,
+comes to 105.4, 5 more. Tuned's 100.4 replaces the 91.0 in the entry below. On
+2,800 dev seeds that chose nothing, 700200 to 702999, it averages 94.8, so the
+held-out seeds are hard for it by about 5, where the old tuned's 91.0 was a
+little lucky: it came to 97.3 on 700200 to 700999.
+
+**Checking it.** `tests/test_cyber.py` has 91 tests. The new ones check that a
+second factor keeps a stolen password from bringing the intruder back, so the
+incident ends once it is out, that who needs one is drawn after everything else
+in the estate, and that `settings` names what a second factor for everyone
+leaves without effect. The whole suite, 848 passed and 2 skipped, took 260 s,
+and the 26 slow tests 361 s, both with other work on the laptop.
+
+---
+
 ## Cyber defence checked again - faults fixed before a defender trains on it
 
 A trained defender minimises what an incident costs, so it finds any fault in

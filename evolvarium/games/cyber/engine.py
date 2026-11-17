@@ -107,14 +107,16 @@ class Incident:
         self.estate = estate = Estate(settings, estate_rng)
         size = self.size = estate.size
         roles = estate.roles
-        # Stolen credentials that count as the intruder still being in: a user's,
-        # which it can log back on with by VPN, and an administrator's or a
-        # service's, which a team has to reset after a breach though they are no
-        # way back in here. The shared local admin password counts only with a
-        # foothold to use it from.
+        # Stolen credentials that count as the intruder still being in: the
+        # password of a user it can log back on as by VPN, and an administrator's
+        # or a service's, which a team has to reset after a breach though they
+        # are no way back in here. The shared local admin password, and the
+        # password of a user whose VPN logons need a second factor, count only
+        # with a foothold to use them from.
         self._matters = PRIVILEGED
         for h in estate.workstations:
-            self._matters |= password(h)
+            if not estate.mfa[h]:
+                self._matters |= password(h)
         self.flaws = list(estate.flaws)
         self.rebuild_steps = tuple(
             soc.reimage_workstation if role in WORKSTATIONS
@@ -345,9 +347,11 @@ class Incident:
         self._usable_count = len(self.usable_hosts())
 
     def _vpn_targets(self) -> list[int]:
-        """Workstations whose user's password the intruder holds, that it can log on to."""
-        return [h for h in self.estate.workstations
-                if self.creds & password(h) and self.in_service(h)]
+        """Workstations whose user's password the intruder holds, that it can log on
+        to over the VPN: in service, and with no second factor asked of the user."""
+        estate = self.estate
+        return [h for h in estate.workstations
+                if self.creds & password(h) and self.in_service(h) and not estate.mfa[h]]
 
     def _enter(self) -> None:
         """The first entry, or a way back in."""

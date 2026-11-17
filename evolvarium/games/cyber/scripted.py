@@ -179,17 +179,17 @@ def sweep(view: Sequence[float], rng: random.Random) -> str:
 # What `tuned` does with a host, by its kind and the strength of its open alerts.
 # Coordinate descent over every cell of tables like this one, and over what
 # starts a reset, on dev seeds 700000-700199, from the sweep, triage and quiet
-# rules, ended here from the triage one at a mean cost of 88.7, and at 91.9 on
-# 800000-800199, which chose nothing. It was the best of the three on the dev
-# seeds; the one from sweep did better on the others, 83.8 against 91.9.
+# rules, then from sweep and quiet again with a reset after any finding, ended
+# here from sweep at a mean cost of 83.2, and at 87.1 on 800000-800199, which
+# chose nothing. It was the lowest on the dev seeds of the five.
 _TUNED = {
-    "workstation": {"none": "investigate", "low": "investigate", "medium": "investigate",
+    "workstation": {"none": "investigate", "low": "reimage", "medium": "isolate",
                     "high": "reimage"},
-    "admin_ws": {"none": "dismiss", "low": "dismiss", "medium": "investigate",
-                 "high": "investigate"},
-    "server": {"none": "investigate", "low": "investigate", "medium": "investigate",
-               "high": "reimage"},
-    "core": {"none": "investigate", "low": "investigate", "medium": "investigate",
+    "admin_ws": {"none": "investigate", "low": "dismiss", "medium": "investigate",
+                 "high": "isolate"},
+    "server": {"none": "dismiss", "low": "investigate", "medium": "investigate",
+               "high": "investigate"},
+    "core": {"none": "dismiss", "low": "investigate", "medium": "investigate",
              "high": "investigate"},
 }
 

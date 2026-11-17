@@ -151,6 +151,13 @@ class Estate:
             for h, role in enumerate(roles)
         )
 
+        # Users whose logons over the VPN need a second factor as well as the
+        # password. Drawn last, so every draw above is the same with or without it.
+        mfa = [False] * size
+        for h in self.workstations:
+            mfa[h] = rng.random() < config.vpn_mfa
+        self.mfa = tuple(mfa)
+
     def _reach(self) -> tuple[frozenset, ...]:
         """Who may open a session to whom, as the firewalls allow."""
         roles, everything = self.roles, set(range(self.size))

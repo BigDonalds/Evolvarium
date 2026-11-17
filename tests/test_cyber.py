@@ -381,7 +381,8 @@ def test_isolating_the_domain_controller_pauses_staging_and_rebuilding_it_starts
 
 def test_with_a_password_it_returns_by_vpn_and_without_one_it_phishes():
     settings = cyber(intruder__vpn_delay_min=2, intruder__vpn_delay_max=2,
-                     intruder__re_entry_delay_min=3, intruder__re_entry_delay_max=3)
+                     intruder__re_entry_delay_min=3, intruder__re_entry_delay_max=3,
+                     estate__vpn_mfa=0.0)
     incident = ready(settings)
     h = first(incident, WORKSTATION)
     incident.creds = password(h)
@@ -513,7 +514,7 @@ def test_rebuilding_a_workstation_costs_its_user_and_leaves_their_password_stole
 
 def test_after_its_workstation_is_rebuilt_a_stolen_password_brings_it_back_by_vpn():
     settings = cyber(intruder__vpn_delay_min=3, intruder__vpn_delay_max=3,
-                     detection__false_alerts=0.0)
+                     detection__false_alerts=0.0, estate__vpn_mfa=0.0)
     incident = ready(settings, evict=True)
     h = first(incident, WORKSTATION)
     hold(incident, h, level=1)
@@ -711,6 +712,38 @@ def test_the_intruder_is_thrown_out_only_once_every_host_is_back_in_service():
         respond(incident)
     assert incident.end == EndCause.EVICTED
     assert incident.t == 1 + CYBER.soc.reimage_workstation
+
+
+def test_a_second_factor_on_the_vpn_keeps_a_stolen_password_from_bringing_it_back():
+    settings = cyber(detection__false_alerts=0.0, estate__vpn_mfa=1.0)
+    incident = ready(settings, evict=True)
+    h = first(incident, WORKSTATION)
+    assert incident.estate.mfa[h]
+    hold(incident, h, level=1)
+    incident.creds = password(h)
+    hand(incident, h)
+    respond(incident, "reimage")
+    while not incident.finished:
+        respond(incident)
+        assert incident.reentry_kind != "vpn"
+    # Out for good, with nothing it holds a way back in.
+    assert incident.end == EndCause.EVICTED and incident.creds == password(h)
+    assert incident.costs["unresolved"] == 0.0
+
+
+def test_who_needs_a_second_factor_is_drawn_after_everything_else():
+    for seed in DEV[:8]:
+        without = Incident(cyber(estate__vpn_mfa=0.0), seed).estate
+        every = Incident(cyber(estate__vpn_mfa=1.0), seed).estate
+        default = Incident(CYBER, seed).estate
+        for estate in (every, default):
+            assert estate.roles == without.roles and estate.flaws == without.flaws
+            assert estate.cached == without.cached and estate.noise == without.noise
+        assert not any(without.mfa)
+        assert [every.mfa[h] for h in every.workstations] == [True] * len(every.workstations)
+        # Only users have a second factor to ask for.
+        assert not any(default.mfa[h] for h in range(default.size)
+                       if h not in default.workstations)
 
 
 def test_a_credential_that_leads_nowhere_does_not_keep_the_incident_going():
@@ -960,6 +993,8 @@ def test_cyber_values_that_cannot_run_are_refused(assignments, problem):
      "estate.web_flaw is 0, so every entry is by phishing"),
     ((("intruder.re_entries_min", "0"), ("intruder.re_entries_max", "0"),
       ("intruder.re_entry_delay_max", "40")), "intruder.re_entries_max is 0"),
+    ((("estate.vpn_mfa", "1"), ("detection.entry_vpn", "0.3")),
+     "estate.vpn_mfa is 1, so no stolen password brings the intruder back by VPN"),
 ])
 def test_a_cyber_setting_with_no_effect_is_refused(assignments, reason):
     config = configure(*assignments, config=CONFIG.with_overrides(game="cyber"))

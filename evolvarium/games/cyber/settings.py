@@ -37,6 +37,9 @@ class EstateConfig:
     # Chance an ordinary workstation, or a file, mail, backup or print server,
     # runs no endpoint agent.
     unmanaged: float = 0.15
+    # Chance a user's logons over the VPN also need a second factor, which a
+    # stolen password alone does not give.
+    vpn_mfa: float = 0.8
 
 
 @dataclass(frozen=True)

@@ -107,8 +107,9 @@ database, each with its own firewall rules, cached credentials and flaws. An
 intruder gets in by phishing or through the web server and works toward
 stealing the database, or the copy on the backup server, or setting off
 ransomware, by scanning, escalating its privileges, dumping credentials and
-moving with them. Thrown out, it comes back by VPN with a password it stole,
-until the credentials are reset, or with a new phishing campaign. A security
+moving with them. Thrown out, it comes back by VPN with a password it stole
+from a user whose VPN logons ask for no second factor, until the credentials
+are reset, or with a new phishing campaign. A security
 team of two analysts works a ranked queue of alerts, most of them false. For the
 host it is handed, each analyst watches, dismisses, investigates, isolates,
 releases or rebuilds it, resets the credentials or blocks the intruder's command
@@ -132,9 +133,9 @@ evidence about any real network. It leaves out:
   an intruder that is not there;
 - more than one intruder, worms, insiders and supply-chain attacks: there are
   three scripted intruders, which do not adapt;
-- prevention, such as patching cycles, email filtering and multi-factor
-  logons, and recovery beyond rebuilding a host, which understates what
-  ransomware costs;
+- prevention, such as patching cycles, email filtering and a second factor
+  anywhere but the VPN, and recovery beyond rebuilding a host, which
+  understates what ransomware costs;
 - networks of more than 18 hosts, and realistic false alert rates: each host
   raises far more than a real one, so a small network keeps two analysts busy
   and still leaves them time to investigate most hosts each day;
